@@ -1,0 +1,873 @@
+---
+title: "Student Retention Analysis"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r Load Libraries for Analysis}
+library(glmnet)
+library(caret)
+library(dplyr)
+library(e1071)
+library(pROC)
+library(ggplot2)
+library(readr)
+library(mice)
+library(VIM)
+library(gbm)
+library(ggformula)
+library(xgboost)
+library(randomForest)
+library(car)
+```
+
+```{r Load dataframe, convert categorical variables into factors}
+
+final_data <- read_csv("final_data.csv", show_col_types = FALSE)
+
+# Convert zip_code to factor
+final_data$Zip_Code <- factor(final_data$Zip_Code)
+final_data$Primary_Program_Code <- factor(final_data$Primary_Program_Code)
+final_data$Gender <- factor(final_data$Gender)
+final_data$Ethnicity <- factor(final_data$Ethnicity)
+final_data$Parent_Education_Level_Code <- factor(final_data$Parent_Education_Level_Code)
+final_data$Retention <- factor(final_data$Retention)
+final_data$STEM_students <- factor(final_data$STEM_students)
+```
+
+```{r Remove Columns where Age is 0}
+#remove all rows where 'Age' = 0 in final_data dataframe
+
+# Remove rows where Age is equal to 0
+final_data <- final_data[final_data$Age != 0, ]
+
+#Rows: 18,995
+```
+
+```{r Create binary Retention variable}
+#create a new column in the final_data dataframe where any value in the Retention column that isn't "Not Retained" becomes "Retained" to make Retention a binary categorical variable
+
+final_data <- final_data %>%
+  mutate(Retention_bin = ifelse(Retention == "Not Retained", "No", "Yes"))
+
+```
+
+```{r Distribution of Retention}
+# Get distribution of Retention_bin
+final_data %>%
+  group_by(Retention_bin) %>%
+  summarize(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100)
+
+#Retained = 85.9%
+#Not Retained = 14.1%
+```
+
+```{r Remove columns not used for analysis}
+#remove columns that won't be used for Retention EDA
+columns_to_remove <- c(6:8, 10:12, 15:25)
+RetData <- final_data[, -columns_to_remove]
+colnames(RetData)
+
+```
+
+```{r Convert binary Retention to factor}
+# Convert 'Retention_bin' to a factor with levels 'No' and 'Yes'
+RetData$Retention_bin <- factor(RetData$Retention_bin, levels = c("No", "Yes"))
+
+# Convert factor levels to numeric: 0 for 'No' and 1 for 'Yes'
+RetData$Bin_Retention <- as.numeric(RetData$Retention_bin) - 1
+
+# Check the transformed 'Retention' column
+head(RetData$Bin_Retention)  # Check the first few values to verify
+
+```
+
+```{r Convert categorical variables into dummy variables}
+#Converting categorical variables into dummy variables (also known as indicator variables) in R is essential for modeling tasks, especially in regression analyses where categorical predictors need to be represented as numeric variables.
+
+dummy_variables <- model.matrix(~ Gender + Ethnicity + Parent_Education_Level_Code + Primary_Program_Code + STEM_students + Retention_bin -1, data = RetData)
+```
+
+```{r KNN Imputation via VIM package of Academic Preparedness (Avg_Enrollment_Date}
+
+# Perform KNN imputation
+RetData_imputed <- kNN(RetData, k = 3)
+
+columns_to_remove <- c(13:24)
+RetData_imputed <- RetData_imputed[, -columns_to_remove]
+```
+
+```{r Create correlation matrix using binary Retention data}
+# Example using cor() function
+correlation_matrix <- cor(RetData_imputed[, sapply(RetData_imputed, is.numeric)], RetData_imputed$Bin_Retention)
+print(correlation_matrix)
+
+```
+
+```{r Correlation Plot of Numeric Predictor Variables}
+library(ISLR)
+library(corrplot)
+library(RColorBrewer)
+
+# Take only the numeric variables
+data_numeric = select_if(RetData_imputed, is.numeric)
+
+# Compute correlation matrix
+correlations <- cor(data_numeric,
+	  use = "pairwise.complete.obs")
+
+# Make the correlation plot
+corrplot(correlations,
+	type = "upper", order = "hclust",
+	col = rev(brewer.pal(n = 8, name = "RdYlBu")))
+```
+
+```{r Create histogram for Retention}
+# Create histograms for each numeric variable
+hist_Var8 <- ggplot(RetData, aes(x = `Bin_Retention`)) +
+  geom_histogram(binwidth = 0.05, fill = "red", color = "black")
+
+hist_Var8
+```
+
+```{r Create histogram for Cumulative GPA}
+# Create histograms for each numeric variable
+hist_Var8 <- ggplot(GradData_imputed, aes(x = `Cumulative_GPA`)) +
+  geom_histogram(binwidth = 0.05, fill = "red", color = "black")
+
+hist_Var8
+```
+
+```{r Create histogram for AvgLoad}
+# Create histograms for each numeric variable
+hist_Var7 <- ggplot(GradData_imputed, aes(x = `AvgLoad`)) +
+  geom_histogram(binwidth = 0.01, fill = "red", color = "black")
+
+hist_Var7
+```
+
+```{r Create histogram for Age}
+# Create histograms for each numeric variable
+hist_Var5 <- ggplot(GradData_imputed, aes(x = `Age`)) +
+  geom_histogram(binwidth = 1, fill = "red", color = "black")
+hist_Var5
+```
+
+```{r Create histogram for Avg Enrollment Date}
+# Create histograms for each numeric variable
+hist_Var1 <- ggplot(GradData_imputed, aes(x = `Avg_Enrollment_Date`)) +
+  geom_histogram(binwidth = 4, fill = "red", color = "black")
+
+hist_Var1
+```
+
+```{r Create histogram for AvgEconDisScore}
+hist_Var4 <- ggplot(GradData_imputed, aes(x = AvgEconDisScore)) +
+  geom_histogram(binwidth = 0.1, fill = "red", color = "black")
+
+hist_Var4
+```
+
+```{r Standardize numeric variables}
+#Standardization of numeric variables: After standardizing, each variable will have a mean of 0 and a standard deviation of 1. This transformation does not affect the relationship between variables but changes their scale for easier interpretation of coefficients in regression models.
+
+RetData_imputed$Age_standardized <- scale(RetData_imputed$Age)
+RetData_imputed$Avg_Enrollment_Date_standardized <- scale(RetData_imputed$Avg_Enrollment_Date)
+RetData_imputed$Cumulative_GPA_standardized <- scale(RetData_imputed$Cumulative_GPA)
+RetData_imputed$AvgEconDisScore_standardized <- scale(RetData_imputed$AvgEconDisScore)
+RetData_imputed$AvgLoad_standardized <- scale(RetData_imputed$AvgLoad)
+```
+
+```{r Create bar chart of categorical variable, Retention}
+# Create frequency table
+freq_table1 <- table(RetData$Retention_bin)
+
+# Convert frequency table to data frame for plotting
+df_freq1 <- as.data.frame(freq_table1)
+colnames(df_freq1) <- c("Retention_bin", "Frequency")
+
+# Calculate percentages
+df_freq1_summary <- df_freq1
+df_freq1_summary$Percentage <- df_freq1$Frequency / sum(df_freq1$Frequency) * 100
+
+# Plot with percentage labels
+p1 <- ggplot(df_freq1, aes(x = Retention_bin, y = Frequency, fill = Retention_bin)) +
+  geom_bar(stat = "identity") +
+  geom_text(data = df_freq1_summary, aes(label = paste0(round(Percentage, 2), "%"), y = Frequency), vjust = -0.5) +  # Add percentages
+  labs(title = "Distribution of Retention") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Retention_bin")
+
+p1
+```
+
+```{r Create bar chart of categorical variable, Gender}
+# Create frequency table
+freq_table3 <- table(final_data$Gender)
+
+# Convert frequency table to data frame for plotting
+df_freq3 <- as.data.frame(freq_table3)
+colnames(df_freq3) <- c("Gender", "Frequency")
+
+# Plot using ggplot2
+p3 <- ggplot(df_freq3, aes(x = Gender, y = Frequency, fill = Gender)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Gender") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Gender")
+
+p3
+```
+
+```{r Create bar chart of categorical variable, Ethnicity}
+# Create frequency table
+freq_table4 <- table(final_data$Ethnicity)
+
+# Convert frequency table to data frame for plotting
+df_freq4 <- as.data.frame(freq_table4)
+colnames(df_freq4) <- c("Ethnicity", "Frequency")
+
+# Plot using ggplot2
+p4 <- ggplot(df_freq4, aes(x = Ethnicity, y = Frequency, fill = Ethnicity)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Ethnicity") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Ethnicity")
+
+p4
+```
+
+```{r Create bar chart of categorical variable, Parent Education Level Code}
+# Create frequency table
+freq_table5 <- table(final_data$Parent_Education_Level_Code)
+
+# Convert frequency table to data frame for plotting
+df_freq5 <- as.data.frame(freq_table5)
+colnames(df_freq5) <- c("Either Parent Completed a 4 Year Degree? Code", "Frequency")
+
+# Plot using ggplot2
+p5 <- ggplot(df_freq5, aes(x = `Either Parent Completed a 4 Year Degree? Code`, y = Frequency, fill = `Either Parent Completed a 4 Year Degree? Code`)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of `Either Parent Completed a 4 Year Degree? Code`") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Either Parent Completed a 4 Year Degree? Code")
+
+p5
+```
+
+```{r Create bar chart of categorical variable, STEM students}
+# Create frequency table
+freq_table7 <- table(final_data$STEM_students)
+
+# Convert frequency table to data frame for plotting
+df_freq7 <- as.data.frame(freq_table7)
+colnames(df_freq7) <- c("STEM_student", "Frequency")
+
+# Plot using ggplot2
+p7 <- ggplot(df_freq7, aes(x = STEM_student, y = Frequency, fill = STEM_student)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of STEM Student") +
+  theme_minimal() +
+  scale_fill_discrete(name = "STEM Student")
+
+p7
+```
+
+```{r Create bar chart of categorical variable, Primary Program Code}
+# Create frequency table
+freq_table10 <- table(final_data$Primary_Program_Code)
+
+# Convert frequency table to data frame for plotting
+df_freq10 <- as.data.frame(freq_table10)
+colnames(df_freq10) <- c("Primary Program Code", "Frequency")
+
+# Filter out "None Reported" category
+df_freq10 <- df_freq10[df_freq10$`Primary Program Code` != "CLLPL", ]
+
+# Plot using ggplot2 with counts
+p10 <- ggplot(df_freq10, aes(x = `Primary Program Code`, y = Frequency, fill = `Primary Program Code`)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Frequency), vjust = -0.5, size = 3, color = "black") +  # Add text labels for counts
+  labs(title = "Distribution of Primary Program Code") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Primary Program Code")
+
+p10
+
+```
+
+```{r Prep data for Analysis}
+RetData_final <- cbind(RetData_imputed[, c("Cumulative_GPA_standardized", 
+                                 "Age_standardized",
+                                 "AvgLoad_standardized", 
+                                 "AvgEconDisScore_standardized", 
+                                 "Avg_Enrollment_Date_standardized"
+                                 )],
+                  dummy_variables,
+                  Retained = RetData_imputed$Retention_bin
+                  )
+
+# Rename the variables
+names(RetData_final)[names(RetData_final) == "EthnicityHawaiian/Pacific Islander"] <- "Ethnicity_Hawaiian_Pacific_Islander"
+names(RetData_final)[names(RetData_final) == "EthnicityMulti Racial"] <- "EthnicityMulti_Racial"
+
+```
+
+```{r Train and Test Data on Imputed Values}
+set.seed(123)
+train_index <- sample(nrow(RetData_final), 0.7 * nrow(RetData_final))
+
+train_data <- RetData_final[train_index, ]
+test_data <- RetData_final[-train_index, ]
+
+# Convert response variable to factor
+train_data$Retention_binYes <- factor(train_data$Retention_binYes)
+test_data$Retention_binYes <- factor(test_data$Retention_binYes)
+
+```
+
+```{r Logistic Regression with regularization}
+
+# CV control with correct seeds format
+ctrl <- trainControl(method = "cv",    # Cross-validation method
+                     number = 5,       # Number of folds
+                     verboseIter = TRUE,  # Print progress
+                     seeds = list(seed = 123, 1, 2, 3, 4, 5)   # Provide a list of seeds
+)
+
+formula <- as.formula("Retention_binYes ~ Cumulative_GPA_standardized + Age_standardized + AvgLoad_standardized + AvgEconDisScore_standardized + Avg_Enrollment_Date_standardized + GenderFemale + GenderMale + GenderUnknown + EthnicityAsian + EthnicityBlack + Ethnicity_Hawaiian_Pacific_Islander + EthnicityHispanic + EthnicityMulti_Racial + EthnicityUnknown + EthnicityWhite + Parent_Education_Level_CodeB + Parent_Education_Level_CodeH + Parent_Education_Level_CodeM + Parent_Education_Level_CodeN + Parent_Education_Level_CodeT + Primary_Program_CodeBIPWR + Primary_Program_CodeBLDGS + Primary_Program_CodeCIVIL + Primary_Program_CodeCLLPL + Primary_Program_CodeCTELE + Primary_Program_CodeCTFMT + Primary_Program_CodeCTINA + Primary_Program_CodeCTREN + Primary_Program_CodeCTSDA + Primary_Program_CodeCUSTS + Primary_Program_CodeEASSM + Primary_Program_CodeELECT + Primary_Program_CodeELENG + Primary_Program_CodeELMCL + Primary_Program_CodeELMNT + Primary_Program_CodeELSVT + Primary_Program_CodeHVABC + Primary_Program_CodeHVACR + Primary_Program_CodeIMADV + Primary_Program_CodeIMFAC + Primary_Program_CodeINDMN + Primary_Program_CodeINELA + Primary_Program_CodeMECHD + Primary_Program_CodeMHVAC + Primary_Program_CodeMMILL + Primary_Program_CodeMNTCA + Primary_Program_CodeSTECS + Primary_Program_CodeSTESE + STEM_studentsYes")
+
+# Define the parameter grid for tuning (including lambda)
+param_grid <- expand.grid(
+  alpha = 0,                   # 0 for ridge (regularization)
+  lambda = 0.01                
+)
+
+# Train logistic regression model with glmnet and set lambda = 0.01
+set.seed(123)  # For reproducibility
+logit_model <- train(
+  formula,
+  data = train_data,
+  method = "glmnet",            # Logistic regression method with glmnet
+  trControl = ctrl,             # Cross-validation control
+  preProcess = c("center", "scale"),  # Preprocessing: standardize predictors
+  tuneGrid = param_grid,        # Parameter grid for tuning (including lambda)
+  family = "binomial"           # Binomial family for logistic regression
+)
+
+# Predict probabilities on test set
+predictions <- predict(logit_model, newdata = test_data, type = "prob")
+
+# Convert predicted probabilities to factors
+predicted_class <- ifelse(predictions$`1` > 0.85, "1", "0")
+
+# Align factor levels of predicted_class with test_data$GBin_RetentionYes
+predicted_class <- factor(predicted_class, levels = levels(test_data$Retention_binYes))
+
+# Evaluate performance
+conf_matrix <- confusionMatrix(predicted_class, reference = test_data$Retention_binYes)
+
+# Get the predicted probabilities for the positive class
+predicted_probabilities <- predictions[, 1]
+
+# Compute ROC curve and AUC
+roc_curve <- roc(test_data$Retention_binYes, predicted_probabilities)
+auc_value <- auc(roc_curve)
+
+# Print AUC
+print(paste("AUC:", auc_value))
+
+f1_score <- conf_matrix$byClass["F1"]
+print(paste("F1 Score:", f1_score))
+
+```
+
+```{r Logistic Regression with regularization and Bootstrapping Sampling to balance uneven dataset}
+# Bootstrapping Sampling to balance uneven dataset
+set.seed(123)
+boot_indices <- sample(1:nrow(train_data), replace = TRUE, size = nrow(train_data))
+boot_data <- train_data[boot_indices, ]
+
+
+# Define cross-validation control with correct seeds format
+ctrl <- trainControl(method = "cv",    # Cross-validation method
+                     number = 5,       # Number of folds
+                     verboseIter = TRUE,  # Print progress
+                     seeds = list(seed = 123, 1, 2, 3, 4, 5)   # Provide a list of seeds
+)
+
+formula <- as.formula("Retention_binYes ~ Cumulative_GPA_standardized + Age_standardized + AvgLoad_standardized + AvgEconDisScore_standardized + Avg_Enrollment_Date_standardized + GenderFemale + GenderMale + GenderUnknown + EthnicityAsian + EthnicityBlack + Ethnicity_Hawaiian_Pacific_Islander + EthnicityHispanic + EthnicityMulti_Racial + EthnicityUnknown + EthnicityWhite + Parent_Education_Level_CodeB + Parent_Education_Level_CodeH + Parent_Education_Level_CodeM + Parent_Education_Level_CodeN + Parent_Education_Level_CodeT + Primary_Program_CodeBIPWR + Primary_Program_CodeBLDGS + Primary_Program_CodeCIVIL + Primary_Program_CodeCLLPL + Primary_Program_CodeCTELE + Primary_Program_CodeCTFMT + Primary_Program_CodeCTINA + Primary_Program_CodeCTREN + Primary_Program_CodeCTSDA + Primary_Program_CodeCUSTS + Primary_Program_CodeEASSM + Primary_Program_CodeELECT + Primary_Program_CodeELENG + Primary_Program_CodeELMCL + Primary_Program_CodeELMNT + Primary_Program_CodeELSVT + Primary_Program_CodeHVABC + Primary_Program_CodeHVACR + Primary_Program_CodeIMADV + Primary_Program_CodeIMFAC + Primary_Program_CodeINDMN + Primary_Program_CodeINELA + Primary_Program_CodeMECHD + Primary_Program_CodeMHVAC + Primary_Program_CodeMMILL + Primary_Program_CodeMNTCA + Primary_Program_CodeSTECS + Primary_Program_CodeSTESE + STEM_studentsYes")
+
+# Define the parameter grid for tuning (including lambda)
+param_grid <- expand.grid(
+  alpha = 0,                   # 0 for ridge (regularization)
+  lambda = 0.01                
+)
+
+# Train logistic regression model with glmnet and set lambda = 0.01
+set.seed(123)  # For reproducibility
+logit_model <- train(
+  formula,
+  data = boot_data,
+  method = "glmnet",            # Logistic regression method with glmnet
+  trControl = ctrl,             # Cross-validation control
+  preProcess = c("center", "scale"),  # Preprocessing: standardize predictors
+  tuneGrid = param_grid,        # Parameter grid for tuning (including lambda)
+  family = "binomial"           # Binomial family for logistic regression
+)
+
+# Predict probabilities on test set
+predictions <- predict(logit_model, newdata = test_data, type = "prob")
+
+# Convert predicted probabilities to factors based on threshold (e.g., 0.5)
+predicted_class <- ifelse(predictions$`1` > 0.5, "1", "0")
+
+# Align factor levels of predicted_class with test_data$Retention_binYes
+predicted_class <- factor(predicted_class, levels = levels(test_data$Retention_binYes))
+test_data$Retention_binYes <- factor(test_data$Retention_binYes, levels = levels(predicted_class))
+
+# Evaluate performance
+cm <- confusionMatrix(predicted_class, reference = test_data$Retention_binYes)
+
+# Get the predicted probabilities for the positive class (usually the second column)
+predicted_probabilities <- predictions[, 1]
+
+# Compute ROC curve and AUC
+roc_curve <- roc(test_data$Retention_binYes, predicted_probabilities)
+auc_value <- auc(roc_curve)
+
+# Print AUC
+print(paste("AUC:", auc_value))
+
+f1_score <- cm$byClass["F1"]
+print(paste("F1 Score:", f1_score))
+```
+
+```{r SVM Model on Retention Data}
+# Define cross-validation control
+ctrl <- trainControl(
+  method = "cv",           # Cross-validation method
+  number = 5,              # Number of folds
+  verboseIter = TRUE,      # Print progress
+  seeds = list(
+    Seed1 = c(123, 234, 345, 456, 567),
+    Seed2 = c(111, 222, 333, 444, 555),
+    Seed3 = c(222, 333, 444, 555, 666),
+    Seed4 = c(333, 444, 555, 666, 777),
+    Seed5 = c(444, 555, 666, 777, 888),
+    Seed6 = 999             # Last element should be a single integer
+  ),
+  allowParallel = TRUE     # Optionally enable parallel processing
+)
+
+# Formula for SVM model
+formula <- as.formula("Retention_binYes ~ Cumulative_GPA_standardized + Age_standardized + AvgLoad_standardized + AvgEconDisScore_standardized + Avg_Enrollment_Date_standardized + GenderFemale + GenderMale + GenderUnknown + EthnicityAsian + EthnicityBlack + Ethnicity_Hawaiian_Pacific_Islander + EthnicityHispanic + EthnicityMulti_Racial + EthnicityUnknown + EthnicityWhite + Parent_Education_Level_CodeB + Parent_Education_Level_CodeH + Parent_Education_Level_CodeM + Parent_Education_Level_CodeN + Parent_Education_Level_CodeT + Primary_Program_CodeBIPWR + Primary_Program_CodeBLDGS + Primary_Program_CodeCIVIL + Primary_Program_CodeCLLPL + Primary_Program_CodeCTELE + Primary_Program_CodeCTFMT + Primary_Program_CodeCTINA + Primary_Program_CodeCTREN + Primary_Program_CodeCTSDA + Primary_Program_CodeCUSTS + Primary_Program_CodeEASSM + Primary_Program_CodeELECT + Primary_Program_CodeELENG + Primary_Program_CodeELMCL + Primary_Program_CodeELMNT + Primary_Program_CodeELSVT + Primary_Program_CodeHVABC + Primary_Program_CodeHVACR + Primary_Program_CodeIMADV + Primary_Program_CodeIMFAC + Primary_Program_CodeINDMN + Primary_Program_CodeINELA + Primary_Program_CodeMECHD + Primary_Program_CodeMHVAC + Primary_Program_CodeMMILL + Primary_Program_CodeMNTCA + Primary_Program_CodeSTECS + Primary_Program_CodeSTESE + STEM_studentsYes")
+
+
+# Define the parameter grid for tuning
+param_grid <- expand.grid(
+  cost = c(0.1, 1, 10),      # Example values for cost parameter
+  gamma = c(0.1, 1, 10)      # Example values for gamma parameter
+)
+
+# Train SVM model with hyperparameter tuning
+set.seed(123)  # For reproducibility
+tuned_svm_model <- svm(
+  formula,                    # Use the formula defined earlier
+  data = train_data,
+  cross = 5,                  # Number of folds for cross-validation
+  scale = TRUE,               # Scale data
+  type = "C-classification",  # Type of SVM (classification)
+  kernel = "radial",          # Kernel type (radial basis function)
+  cost = param_grid$cost,     # Cost parameter from param_grid
+  gamma = param_grid$gamma,    # Gamma parameter from param_grid
+  probability = TRUE
+)
+
+```
+
+```{r Best Cost Value SVM}
+# Find the index of the row with the highest accuracy
+best_index <- which.max(tuned_svm_model$accuracies)
+
+# Extract the best cost (C) parameter
+best_cost <- tuned_svm_model$cost[best_index]
+
+# Print the best cost value
+print(paste("Best Cost (C):", best_cost))
+```
+
+```{r SVM Predictions AUCROC F1 Scores}
+predictions_scores <- predict(tuned_svm_model, newdata = test_data, probability = TRUE)
+predictions_prob <- attr(predictions_scores, "probabilities")[, "1"]
+
+# Evaluate performance
+cm <- confusionMatrix(predictions_scores, test_data$Retention_binYes)
+
+# Compute ROC curve object
+roc_obj <- roc(test_data$Retention_binYes, predictions_prob)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve")
+
+# Calculate AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+# Define function to compute F1 score
+f1 <- function(data, lev = NULL, model = NULL) {
+  cm <- confusionMatrix(data = data, reference = lev)
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  return(f1_score)
+}
+
+# Convert predicted probabilities to factors based on threshold 
+threshold <- 0.85 
+predicted_class <- ifelse(predictions_prob > threshold, "1", "0")
+predicted_class <- factor(predicted_class, levels = levels(test_data$Retention_binYes))
+
+# Compute macro-average F1 score
+macro_avg_f1 <- f1(data = predicted_class, lev = test_data$Retention_binYes)
+print(paste("Macro-average F1 Score:", macro_avg_f1))
+```
+
+```{r Random Forests on Retention Data}
+
+# Define cross-validation control with correct seeds format
+ctrl <- trainControl(method = "cv",    # Cross-validation method
+                     number = 5,        # Number of folds
+                     verboseIter = TRUE,  # Print progress
+                     seeds = list(Seed1 = c(123, 234, 345),
+                                  Seed2 = c(456, 567, 678),
+                                  Seed3 = c(789, 890, 901),
+                                  Seed4 = c(111, 222, 333),
+                                  Seed5 = c(444, 555, 666),
+                                  Seed6 = c(777, 888, 999))
+)
+
+# Model Formula
+formula <- as.formula("Retention_binYes ~ Cumulative_GPA_standardized + Age_standardized + AvgLoad_standardized + AvgEconDisScore_standardized + Avg_Enrollment_Date_standardized + GenderFemale + GenderMale + GenderUnknown + EthnicityAsian + EthnicityBlack + Ethnicity_Hawaiian_Pacific_Islander + EthnicityHispanic + EthnicityMulti_Racial + EthnicityUnknown + EthnicityWhite + Parent_Education_Level_CodeB + Parent_Education_Level_CodeH + Parent_Education_Level_CodeM + Parent_Education_Level_CodeN + Parent_Education_Level_CodeT + Primary_Program_CodeBIPWR + Primary_Program_CodeBLDGS + Primary_Program_CodeCIVIL + Primary_Program_CodeCLLPL + Primary_Program_CodeCTELE + Primary_Program_CodeCTFMT + Primary_Program_CodeCTINA + Primary_Program_CodeCTREN + Primary_Program_CodeCTSDA + Primary_Program_CodeCUSTS + Primary_Program_CodeEASSM + Primary_Program_CodeELECT + Primary_Program_CodeELENG + Primary_Program_CodeELMCL + Primary_Program_CodeELMNT + Primary_Program_CodeELSVT + Primary_Program_CodeHVABC + Primary_Program_CodeHVACR + Primary_Program_CodeIMADV + Primary_Program_CodeIMFAC + Primary_Program_CodeINDMN + Primary_Program_CodeINELA + Primary_Program_CodeMECHD + Primary_Program_CodeMHVAC + Primary_Program_CodeMMILL + Primary_Program_CodeMNTCA + Primary_Program_CodeSTECS + Primary_Program_CodeSTESE + STEM_studentsYes")
+
+# Train Random Forest model
+set.seed(123)  # For reproducibility
+rf_model <- train(formula,
+                  data = train_data,
+                  method = "rf",    # Random Forest method
+                  trControl = ctrl,
+                  tuneGrid = expand.grid(mtry = c(2, 10, 25)),  # Adjust mtry as needed
+                  importance = TRUE
+)
+
+```
+
+```{r Random Forest Predictions, AUCROC, F1, Variable Importance}
+# Predict on test data
+predictions <- predict(rf_model, newdata = test_data, type = "prob")
+
+# Extract the probabilities for the positive class (1)
+predictions_prob <- predictions[, "1"]
+
+# Convert probabilities to class labels using a threshold of 0.5
+predicted_classes <- ifelse(predictions_prob > 0.85, "1", "0")
+
+# Ensure predicted_classes is a factor with levels matching test_data$Retention_binYes
+predicted_classes <- factor(predicted_classes, levels = levels(test_data$Retention_binYes))
+
+# Create a confusion matrix
+confusion_matrix <- confusionMatrix(predicted_classes, reference = test_data$Retention_binYes)
+print(confusion_matrix)
+
+# Convert the target variable to numeric
+test_data_numeric <- as.numeric(as.character(test_data$Retention_binYes))
+
+roc_curve <- roc(test_data_numeric, predictions_prob)
+plot(roc_curve, main = "ROC Curve")
+auc <- auc(roc_curve)
+print(paste("AUC:", auc))
+
+# Compute F1 score
+precision <- confusion_matrix$byClass["Pos Pred Value"]
+recall <- confusion_matrix$byClass["Sensitivity"]
+
+# Calculate F1 score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print the F1 score
+print(paste("F1 Score:", f1_score))
+
+# Get variable importance
+var_importance <- varImp(rf_model, scale = TRUE)
+
+# Print variable importance
+print(var_importance)
+
+# Plot variable importance
+plot(var_importance, main = "Variable Importance")
+
+```
+
+```{r Optimal number of trees from Random Forest Model}
+# Access OOB error rates from the model
+oob_error <- rf_model$finalModel$err.rate[, "OOB"]
+
+# Find the optimal number of trees with the minimum OOB error
+optimal_trees <- which.min(oob_error)
+
+# Plot OOB error vs number of trees
+plot(1:length(oob_error), oob_error, type = "b", 
+     xlab = "Number of Trees", ylab = "OOB Error",
+     main = "OOB Error vs Number of Trees")
+abline(v = optimal_trees, col = "red", lty = 2)
+legend("topright", legend = paste("Optimal Trees =", optimal_trees), col = "red", lty = 2)
+```
+
+```{r XGBOOST on Retention Data}
+
+# Define cross-validation control with correct seeds format
+ctrl <- trainControl(
+  method = "cv",           # Cross-validation method
+  number = 5,              # Number of folds
+  seeds = list(
+    Seed1 = c(11,22,33,44,55,66,77,88,99),
+    Seed2 = c(111, 222, 333, 444, 555, 666,777,888,999),
+    Seed3 = c(1,2,3,4,5,6,7,8,9),
+    Seed4 = c(1111,2222,3333,4444,5555,6666,7777,8888,9999),
+    Seed5 = c(11111,22222,333333,44444,55555,666666,777777,8888888,999999),
+    Seed6 = 101             
+  ),
+  allowParallel = TRUE    
+)
+
+formula <- as.formula("Retention_binYes ~ Cumulative_GPA_standardized + Age_standardized + AvgLoad_standardized + AvgEconDisScore_standardized + Avg_Enrollment_Date_standardized + GenderFemale + GenderMale + GenderUnknown + EthnicityAsian + EthnicityBlack + Ethnicity_Hawaiian_Pacific_Islander + EthnicityHispanic + EthnicityMulti_Racial + EthnicityUnknown + EthnicityWhite + Parent_Education_Level_CodeB + Parent_Education_Level_CodeH + Parent_Education_Level_CodeM + Parent_Education_Level_CodeN + Parent_Education_Level_CodeT + Primary_Program_CodeBIPWR + Primary_Program_CodeBLDGS + Primary_Program_CodeCIVIL + Primary_Program_CodeCLLPL + Primary_Program_CodeCTELE + Primary_Program_CodeCTFMT + Primary_Program_CodeCTINA + Primary_Program_CodeCTREN + Primary_Program_CodeCTSDA + Primary_Program_CodeCUSTS + Primary_Program_CodeEASSM + Primary_Program_CodeELECT + Primary_Program_CodeELENG + Primary_Program_CodeELMCL + Primary_Program_CodeELMNT + Primary_Program_CodeELSVT + Primary_Program_CodeHVABC + Primary_Program_CodeHVACR + Primary_Program_CodeIMADV + Primary_Program_CodeIMFAC + Primary_Program_CodeINDMN + Primary_Program_CodeINELA + Primary_Program_CodeMECHD + Primary_Program_CodeMHVAC + Primary_Program_CodeMMILL + Primary_Program_CodeMNTCA + Primary_Program_CodeSTECS + Primary_Program_CodeSTESE + STEM_studentsYes")
+
+# Define the parameter grid for tuning
+param_grid <- expand.grid(
+  nrounds = c(50, 100, 150),  # Number of boosting rounds
+  max_depth = c(3, 6, 9),     # Maximum depth of trees
+  eta = c(0.01, 0.1, 0.3),    # Learning rate
+  gamma = 0,                  # Minimum loss reduction required to make a further partition on a leaf node
+  colsample_bytree = 1,       # Subsample ratio of columns when constructing each tree
+  min_child_weight = 1,       # Minimum sum of instance weight needed in a child
+  subsample = 1 
+)
+
+# Train XGBoost model with hyperparameter tuning
+set.seed(123)  # For reproducibility
+tuned_xgb_model <- train(
+  formula,                    # Use the formula defined earlier
+  data = train_data,
+  method = "xgbTree",         # XGBoost method for tree-based models
+  trControl = ctrl,           # Use the defined control parameters
+  tuneGrid = param_grid,      # Specify the entire parameter grid for tuning
+  preProcess = c("center", "scale")  # Standardize predictors if needed
+)
+
+```
+
+```{r Best Parameters for XGBoost Method}
+best_params_XGB <- tuned_xgb_model$bestTune
+
+best_params_XGB
+```
+
+```{r XGBOOST Predictions, AUCROC, F1, Variable Importance}
+# Predict on test data
+predictions <- predict(tuned_xgb_model, newdata = test_data, type = "prob")
+
+# Extract the probabilities for the positive class (1)
+predictions_prob <- predictions[, "1"]
+
+# Convert probabilities to class labels using a threshold of 0.5
+predicted_classes <- ifelse(predictions_prob > 0.85, "1", "0")
+
+# Ensure predicted_classes is a factor with levels matching test_data$Retention_binYes
+predicted_classes <- factor(predicted_classes, levels = levels(test_data$Retention_binYes))
+
+# Create a confusion matrix
+confusion_matrix <- confusionMatrix(predicted_classes, reference = test_data$Retention_binYes)
+print(confusion_matrix)
+
+# Convert the target variable to numeric
+test_data_numeric <- as.numeric(as.character(test_data$Retention_binYes))
+
+roc_curve <- roc(test_data_numeric, predictions_prob)
+plot(roc_curve, main = "ROC Curve")
+auc <- auc(roc_curve)
+print(paste("AUC:", auc))
+
+# Compute F1 score
+precision <- confusion_matrix$byClass["Pos Pred Value"]
+recall <- confusion_matrix$byClass["Sensitivity"]
+
+# Calculate F1 score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print the F1 score
+print(paste("F1 Score:", f1_score))
+
+# Get variable importance
+var_importance <- varImp(tuned_xgb_model, scale = FALSE)
+
+# Print variable importance
+print(var_importance)
+
+# Plot variable importance
+plot(var_importance, main = "Variable Importance")
+```
+
+```{r Plot of feature importance with labels Full Feature Set}
+
+p <- ggplot(var_importance, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Student Retention Feature Importance on Full Feature Set") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels 
+  geom_text(aes(label = paste0(round(Importance, 3), "%")), vjust = -0.5, size = 2.5)  # Add percentage labels above bars
+
+print(p)
+```
+
+```{r Make new set of dummy variables for reduced feature set XGBoost}
+dummy_variables_XGB <- model.matrix(~ Retention_binYes -1, data = RetData_final)
+
+```
+
+```{r Prep data for XGBoost Reduced Feature Set}
+Ret_XGB <- cbind(RetData_final[, c("Cumulative_GPA_standardized", 
+                                 "Age_standardized",
+                                 "AvgLoad_standardized", 
+                                 "Avg_Enrollment_Date_standardized",
+                                 "AvgEconDisScore_standardized"
+                                 )],
+                  dummy_variables_XGB,
+                  Retained = RetData_final$Retention_binYes
+                  )
+
+Ret_XGB <- Ret_XGB[, !names(Ret_XGB) %in% c("Retained")]
+```
+
+```{r XGBoost Train and Test Data on Imputed Values}
+set.seed(123)  # For reproducibility
+train_index <- sample(nrow(Ret_XGB), 0.7 * nrow(Ret_XGB))
+
+train_data <- Ret_XGB[train_index, ]
+test_data <- Ret_XGB[-train_index, ]
+
+# Convert response variable to factor
+train_data$Retention_binYes <- factor(train_data$Retention_binYes)
+test_data$Retention_binYes <- factor(test_data$Retention_binYes)
+
+```
+
+```{r Training XGBoost Model on Reduced Feature Set}
+
+# Define cross-validation control with correct seeds format
+ctrl <- trainControl(
+  method = "cv",           # Cross-validation method
+  number = 5,              # Number of folds
+  seeds = list(
+    Seed1 = c(11,22,33,44,55,66,77,88,99),
+    Seed2 = c(111, 222, 333, 444, 555, 666,777,888,999),
+    Seed3 = c(1,2,3,4,5,6,7,8,9),
+    Seed4 = c(1111,2222,3333,4444,5555,6666,7777,8888,9999),
+    Seed5 = c(11111,22222,333333,44444,55555,666666,777777,8888888,999999),
+    Seed6 = 101             # Last element should be a single integer
+  ),
+  allowParallel = TRUE     # Optionally enable parallel processing
+)
+
+# Formula for XGBoost model
+formula <- as.formula("Retention_binYes ~ Cumulative_GPA_standardized + Age_standardized + AvgLoad_standardized + AvgEconDisScore_standardized + Avg_Enrollment_Date_standardized")
+
+# Define the parameter grid for tuning
+param_grid <- expand.grid(
+  nrounds = c(50, 100, 150),  # Number of boosting rounds
+  max_depth = c(3, 6, 9),     # Maximum depth of trees
+  eta = c(0.01, 0.1, 0.3),    # Learning rate
+  gamma = 0,                  # Minimum loss reduction required to make a further partition on a leaf node
+  colsample_bytree = 1,       # Subsample ratio of columns when constructing each tree
+  min_child_weight = 1,       # Minimum sum of instance weight needed in a child
+  subsample = 1 
+)
+
+# Train XGBoost model with hyperparameter tuning
+set.seed(123)  # For reproducibility
+reducedfeat_xgb_model <- train(
+  formula,                    # Use the formula defined earlier
+  data = train_data,
+  method = "xgbTree",         # XGBoost method for tree-based models
+  trControl = ctrl,           # Use the defined control parameters
+  tuneGrid = param_grid,      # Specify the entire parameter grid for tuning
+  preProcess = c("center", "scale")  # Standardize predictors if needed
+)
+```
+
+```{r Pull out best parameters from Reduced Feature Set model XGBoost}
+best_params_XGB_red <- reducedfeat_xgb_model$bestTune
+
+best_params_XGB_red
+```
+
+```{r XGBOOST Red Feat Predictions, AUCROC, F1, Variable Importance}
+# Predict on test data
+predictions <- predict(reducedfeat_xgb_model, newdata = test_data, type = "prob")
+
+# Extract the probabilities for the positive class (1)
+predictions_prob <- predictions[, "1"]
+
+# Convert probabilities to class labels using a threshold of 0.5
+predicted_classes <- ifelse(predictions_prob > 0.85, "1", "0")
+
+# Ensure predicted_classes is a factor with levels matching test_data$Retention_binYes
+predicted_classes <- factor(predicted_classes, levels = levels(test_data$Retention_binYes))
+
+# Create a confusion matrix
+confusion_matrix <- confusionMatrix(predicted_classes, reference = test_data$Retention_binYes)
+print(confusion_matrix)
+
+# Convert the target variable to numeric
+test_data_numeric <- as.numeric(as.character(test_data$Retention_binYes))
+
+roc_curve <- roc(test_data_numeric, predictions_prob)
+plot(roc_curve, main = "ROC Curve")
+auc <- auc(roc_curve)
+print(paste("AUC:", auc))
+
+# Compute F1 score
+precision <- confusion_matrix$byClass["Pos Pred Value"]
+recall <- confusion_matrix$byClass["Sensitivity"]
+
+# Calculate F1 score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print the F1 score
+print(paste("F1 Score:", f1_score))
+
+# Get variable importance
+var_importance <- varImp(reducedfeat_xgb_model, scale = FALSE)
+
+# Print variable importance
+print(var_importance)
+
+# Plot variable importance
+plot(var_importance, main = "Student Retention Variable Importance for Reduced Feature Set")
+```
+
+```{r Plot of feature importance with labels Reduced Feature Set}
+
+p2 <- ggplot(var_importance, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Student Retention Variable Importance for Reduced Feature Set") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels 
+  geom_text(aes(label = paste0(round(Importance, 3), "%")), vjust = -0.5, size = 3.5)  # Add percentage labels above bars
+
+print(p2)
+```
+

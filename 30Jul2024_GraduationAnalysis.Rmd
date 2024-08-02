@@ -1,0 +1,1631 @@
+---
+title: "Graduation EDA"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r Load Libraries for Analysis}
+library(glmnet)
+library(caret)
+library(dplyr)
+library(e1071)
+library(pROC)
+library(ggplot2)
+library(readr)
+library(mice)
+library(VIM)
+library(gbm)
+library(ggformula)
+library(xgboost)
+library(randomForest)
+library(ggpubr)
+```
+
+```{r Load dataframe}
+
+final_data <- read_csv("final_data.csv", show_col_types = FALSE)
+
+# Convert zip_code to factor
+final_data$Zip_Code <- factor(final_data$Zip_Code)
+final_data$Primary_Program_Code <- factor(final_data$Primary_Program_Code)
+final_data$Gender <- factor(final_data$Gender)
+final_data$Ethnicity <- factor(final_data$Ethnicity)
+final_data$Parent_Education_Level_Code <- factor(final_data$Parent_Education_Level_Code)
+final_data$Retention <- factor(final_data$Retention)
+final_data$STEM_students <- factor(final_data$STEM_students)
+```
+
+```{r Remove unused columns}
+#remove columns that won't be used for Graduate EDA
+columns_to_remove <- c(5:8, 10:12, 16:23, 25)
+GradData <- final_data[, -columns_to_remove]
+colnames(GradData)
+
+```
+
+```{r Convert variable Graduated into a factor}
+# Convert 'Graduated' to a factor with levels 'No' and 'Yes'
+GradData$Graduated <- factor(GradData$Graduated, levels = c("No", "Yes"))
+
+# Convert factor levels to numeric: 0 for 'No' and 1 for 'Yes'
+GradData$GraduatedBin <- as.numeric(GradData$Graduated) - 1
+
+# Check the transformed 'Graduated' column
+head(GradData$GraduatedBin)  # Check the first few values to verify
+
+```
+
+```{r Convert categorical variables into dummy variables}
+#Converting categorical variables into dummy variables (also known as indicator variables) in R is essential for modeling tasks, especially in regression analyses where categorical predictors need to be represented as numeric variables.
+
+dummy_variables <- model.matrix(~ Gender + Ethnicity + Parent_Education_Level_Code + Graduated + STEM_students -1, data = GradData)
+```
+
+```{r median imputation of Academic Preparedness (Avg_Enrollment_Date)}
+# Identify numeric columns for imputation (excluding 'Graduated')
+numeric_columns <- names(GradData)[sapply(GradData, is.numeric) & names(GradData) != "Graduated"]
+
+# Create a preprocessing object for median imputation on numeric columns
+preProcValues <- preProcess(GradData[, numeric_columns], method = c("medianImpute"))
+
+# Impute missing values in numeric columns
+GradData_imputedmed <- predict(preProcValues, newdata = GradData[, numeric_columns])
+
+# Combine imputed data with non-numeric columns (including 'Graduated')
+#GradData_imputedmed <- cbind(GradData[, !names(GradData) %in% numeric_columns], GradData_imputed)
+
+# Check the structure of the imputed dataframe
+str(GradData_imputedmed)
+
+# check the first few rows of the imputed dataframe
+head(GradData_imputedmed)
+```
+
+```{r Multiple Imputation via mice package of Academic Preparedness (Avg_Enrollment_Date)}
+#Multiple imputation via "mice"
+library(mice)
+
+# Set up multiple imputation settings
+imputation <- mice(GradData, 
+                   m = 5,  # Number of datasets to impute
+                   method = "pmm",  # Method: predictive mean matching (adjust as needed)
+                   maxit = 50,  # Maximum number of iterations per imputation
+                   seed = 123)  # Set seed for reproducibility
+
+# Impute missing data
+imputed_data <- complete(imputation, action = "long")
+
+columns_to_remove <- c(1:2)
+GradData_imputed <- imputed_data[, -columns_to_remove]
+colnames(GradData_imputed)
+ 
+```
+
+```{r Remove rows instead of impute values of Academic Preparedness}
+#remove missing values
+Grad_LR1_removed <- na.omit(Grad_LR1)
+
+```
+
+```{r KNN Imputation via VIM package of Academic Preparedness (Avg_Enrollment_Date}
+# Perform KNN imputation
+GradData_imputed <- kNN(GradData, k = 3)
+
+columns_to_remove <- c(12:22)
+GradData_imputed <- GradData_imputed[, -columns_to_remove]
+```
+
+```{r Create correlation matrix using binary Graduate data}
+# Example using cor() function
+correlation_matrix <- cor(GradData_imputed[, sapply(GradData_imputed, is.numeric)], final_data$GraduatedBin)
+print(correlation_matrix)
+
+```
+
+```{r Correlation Plot of Numeric Predictor Variables}
+library(ISLR)
+library(corrplot)
+library(RColorBrewer)
+
+# Take only the numeric variables
+data_numeric = select_if(GradData_imputed, is.numeric)
+
+# Compute correlation matrix
+correlations <- cor(data_numeric,
+	  use = "pairwise.complete.obs")
+
+# Make the correlation plot
+corrplot(correlations,
+	type = "upper", order = "hclust",
+	col = rev(brewer.pal(n = 8, name = "RdYlBu")))
+```
+
+```{r Create histogram for Cumulative GPA}
+# Create histograms for each numeric variable
+hist_Var8 <- ggplot(GradData_imputed, aes(x = `Cumulative_GPA`)) +
+  geom_histogram(binwidth = 0.05, fill = "red", color = "black")
+
+hist_Var8
+
+# Create the stacked histogram with a breakdown by "Graduated" status for Cumulative_GPA
+hist_Var8_graduated <- ggplot(GradData_imputed, aes(x = `Cumulative_GPA`, fill = Graduated)) +
+  geom_histogram(binwidth = 0.05, color = "black", position = "stack") +
+  labs(title = "Distribution of Cumulative GPA with Graduation Status", x = "Cumulative GPA", y = "Count") +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+hist_Var8_graduated
+
+```
+
+```{r Create histogram for AvgLoad}
+# Create histograms for each numeric variable
+hist_Var7 <- ggplot(GradData_imputed, aes(x = `AvgLoad`)) +
+  geom_histogram(binwidth = 0.01, fill = "red", color = "black")
+
+hist_Var7
+
+# Create the stacked histogram with a breakdown by "Graduated" status for AvgLoad
+hist_Var7_graduated <- ggplot(GradData_imputed, aes(x = `AvgLoad`, fill = Graduated)) +
+  geom_histogram(binwidth = 0.01, color = "black", position = "stack") +
+  labs(title = "Distribution of Average Load with Graduation Status", x = "Average Load", y = "Count") +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+hist_Var7_graduated
+
+```
+
+```{r Create histogram for YearsInProgram}
+# Create histograms for each numeric variable
+hist_Var6 <- ggplot(GradData_imputed, aes(x = `YearsInProgram`)) +
+  geom_histogram(binwidth = 0.2, fill = "red", color = "black")
+
+hist_Var6
+
+# Create the histogram with a breakdown by "Graduated" status
+hist_Var6_graduated <- ggplot(GradData_imputed, aes(x = `YearsInProgram`, fill = Graduated)) +
+  geom_histogram(binwidth = 0.2, color = "black", position = "stack") +
+  labs(title = "Distribution of Years in Program with Graduation Status", x = "Years in Program", y = "Count") +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+hist_Var6_graduated
+
+```
+
+```{r Create histogram for Age}
+# Create histograms for each numeric variable
+hist_Var5 <- ggplot(GradData_imputed, aes(x = `Age`)) +
+  geom_histogram(binwidth = 1, fill = "red", color = "black")
+hist_Var5
+
+# Create the stacked histogram with a breakdown by "Graduated" status for Age
+hist_Var5_graduated <- ggplot(GradData_imputed, aes(x = `Age`, fill = Graduated)) +
+  geom_histogram(binwidth = 1, color = "black", position = "stack") +
+  labs(title = "Distribution of Age with Graduation Status", x = "Age", y = "Count") +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+hist_Var5_graduated
+
+```
+
+```{r Create histograms for Avg Enrollment Date}
+
+hist_Var10 <- ggplot(data = GradData_imputedmed, aes(x = `Avg_Enrollment_Date`)) +
+  geom_histogram(binwidth = 4, fill = "red", color = "black")+
+  labs(title = "Median Imputation")
+
+hist_Var10
+
+hist_Var100 <- ggplot(GradData_imputed, aes(x = `Avg_Enrollment_Date`)) +
+  geom_histogram(binwidth = 4, fill = "red", color = "black")+
+  labs(title = "KNN Imputation")
+
+hist_Var100
+
+hist_Var1000 <- ggplot(final_data, aes(x = `Avg_Enrollment_Date`)) +
+  geom_histogram(binwidth = 4, fill = "red", color = "black") +
+  labs(title = "No Imputation")
+
+hist_Var1000
+
+hist_combine <- ggarrange(hist_Var1000, hist_Var100, hist_Var10,
+                          labels = c("A", "B", "C"),
+                          ncol = 3, nrow = 1)
+
+hist_combine
+
+# Create the stacked histogram with a breakdown by "Graduated" status for Avg_Enrollment_Date
+hist_Var100_graduated <- ggplot(GradData_imputed, aes(x = `Avg_Enrollment_Date`, fill = Graduated)) +
+  geom_histogram(binwidth = 4, color = "black", position = "stack") +
+  labs(title = "Distribution of Average Enrollment Date with Graduation Status (KNN Imputation)", 
+       x = "Average Enrollment Date", y = "Count") +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+hist_Var100_graduated
+
+```
+
+```{r Create histogram for AvgEconDisScore}
+hist_Var4 <- ggplot(GradData_imputed, aes(x = AvgEconDisScore)) +
+  geom_histogram(binwidth = 0.1, fill = "red", color = "black")
+
+hist_Var4
+
+# Create the stacked histogram with a breakdown by "Graduated" status for AvgEconDisScore
+hist_Var4_graduated <- ggplot(GradData_imputed, aes(x = AvgEconDisScore, fill = Graduated)) +
+  geom_histogram(binwidth = 0.1, color = "black", position = "stack") +
+  labs(title = "Distribution of Average Economic Disadvantage Score with Graduation Status", 
+       x = "Average Economic Disadvantage Score", y = "Count") +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+hist_Var4_graduated
+
+```
+
+```{r Standardize numeric variables}
+#Standardization of numeric variables: After standardizing, each variable will have a mean of 0 and a standard deviation of 1. This transformation does not affect the relationship between variables but changes their scale for easier interpretation of coefficients in regression models.
+
+GradData_imputed$Age_standardized <- scale(GradData_imputed$Age)
+GradData_imputed$Avg_Enrollment_Date_standardized <- scale(GradData_imputed$Avg_Enrollment_Date)
+GradData_imputed$Cumulative_GPA_standardized <- scale(GradData_imputed$Cumulative_GPA)
+GradData_imputed$YearsInProgram_standardized <- scale(GradData_imputed$YearsInProgram)
+GradData_imputed$AvgEconDisScore_standardized <- scale(GradData_imputed$AvgEconDisScore)
+GradData_imputed$AvgLoad_standardized <- scale(GradData_imputed$AvgLoad)
+```
+
+```{r Create bar chart of categorical variable, Retention}
+freq_table1 <- table(final_data$Retention)
+
+# Convert frequency table to data frame for plotting
+df_freq1 <- as.data.frame(freq_table1)
+colnames(df_freq1) <- c("Retention", "Frequency")
+
+# Plot using ggplot2
+p1 <- ggplot(df_freq1, aes(x = Retention, y = Frequency, fill = Retention)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Retention") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Retention")
+
+p1
+
+# Create a frequency table for Retention and Graduated
+freq_table2 <- table(final_data$Retention, final_data$Graduated)
+
+# Convert the frequency table to a data frame for plotting
+df_freq2 <- as.data.frame(freq_table2)
+colnames(df_freq2) <- c("Retention", "Graduated", "Frequency")
+
+# Plot using ggplot2, with Graduated as fill
+p2 <- ggplot(df_freq2, aes(x = Retention, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Distribution of Retention and Graduation Status",
+       x = "Retention",
+       y = "Frequency",
+       fill = "Graduated") +
+  theme_minimal()
+
+p2
+
+```
+
+```{r Distribution of Retention and Graduation Status by Age Group}
+# Create age categories (optional)
+final_data$AgeGroup <- cut(final_data$Age, breaks = c(0, 18, 25, 35, 50, Inf), 
+                           labels = c("0-18", "19-25", "26-35", "36-50", "50+"))
+
+# Create a frequency table for Retention, Graduated, and AgeGroup
+freq_table3 <- table(final_data$Retention, final_data$Graduated, final_data$AgeGroup)
+
+# Convert the frequency table to a data frame for plotting
+df_freq3 <- as.data.frame(freq_table3)
+colnames(df_freq3) <- c("Retention", "Graduated", "AgeGroup", "Frequency")
+
+# Plot using ggplot2, with AgeGroup as an additional facet
+p3 <- ggplot(df_freq3, aes(x = Retention, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ AgeGroup) +
+  labs(title = "Distribution of Retention and Graduation Status by Age Group",
+       x = "Retention",
+       y = "Frequency",
+       fill = "Graduated") +
+  theme_minimal()
+
+p3
+
+```
+
+```{r Average Load by Degree Type and Gender}
+# Calculate the average load for each combination of Degree_Type and Gender
+avg_load_df <- final_data %>%
+  group_by(Degree_Type, Gender) %>%
+  summarise(AvgLoad = mean(AvgLoad, na.rm = TRUE))
+
+# Plot using ggplot2
+p <- ggplot(avg_load_df, aes(x = Degree_Type, y = AvgLoad, fill = Gender)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Average Load by Degree Type and Gender",
+       x = "Degree Type",
+       y = "Average Load",
+       fill = "Gender") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust x-axis labels
+
+p
+
+
+```
+
+```{r Create bar chart of categorical variable, Graduated}
+# Create frequency table
+freq_table2 <- table(final_data$Graduated)
+
+# Convert frequency table to data frame for plotting
+df_freq2 <- as.data.frame(freq_table2)
+colnames(df_freq2) <- c("Graduated", "Frequency")
+
+# Calculate percentages
+df_freq2_summary <- aggregate(Frequency ~ Graduated, data = df_freq2, FUN = function(x) sum(x)/sum(df_freq2$Frequency)*100)
+
+# Plot with percentage labels
+p2 <- ggplot(df_freq2, aes(x = Graduated, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity") +
+  geom_text(data = df_freq2_summary, aes(label = paste0(round(Frequency, 2), "%"), y = Frequency), vjust = -1.5) +  # Add percentages
+  labs(title = "Distribution of Graduated") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Graduated")
+
+print(p2)
+
+#10% of students in sample graduated
+
+p2
+```
+
+```{r Create bar chart of categorical variable, Gender}
+# Create frequency table
+freq_table3 <- table(final_data$Gender)
+
+# Convert frequency table to data frame for plotting
+df_freq3 <- as.data.frame(freq_table3)
+colnames(df_freq3) <- c("Gender", "Frequency")
+
+# Plot using ggplot2
+p3 <- ggplot(df_freq3, aes(x = Gender, y = Frequency, fill = Gender)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Gender") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Gender")
+
+p3
+
+# Create frequency table with Gender and Graduated
+freq_table3 <- table(final_data$Gender, final_data$Graduated)
+
+# Convert frequency table to data frame for plotting
+df_freq3 <- as.data.frame(freq_table3)
+colnames(df_freq3) <- c("Gender", "Graduated", "Frequency")
+
+# Plot using ggplot2
+p3 <- ggplot(df_freq3, aes(x = Gender, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Distribution of Gender with Graduation Status", x = "Gender", y = "Frequency") +
+  theme_minimal() +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+p3
+
+```
+
+```{r Create bar chart of categorical variable, Ethnicity}
+# Create frequency table
+freq_table4 <- table(final_data$Ethnicity)
+
+# Convert frequency table to data frame for plotting
+df_freq4 <- as.data.frame(freq_table4)
+colnames(df_freq4) <- c("Ethnicity", "Frequency")
+
+# Plot using ggplot2
+p4 <- ggplot(df_freq4, aes(x = Ethnicity, y = Frequency, fill = Ethnicity)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Ethnicity") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Ethnicity")
+
+p4
+
+# Create frequency table with Ethnicity and Graduated
+freq_table4 <- table(final_data$Ethnicity, final_data$Graduated)
+
+# Convert frequency table to data frame for plotting
+df_freq4 <- as.data.frame(freq_table4)
+colnames(df_freq4) <- c("Ethnicity", "Graduated", "Frequency")
+
+# Plot using ggplot2
+p4 <- ggplot(df_freq4, aes(x = Ethnicity, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Distribution of Ethnicity with Graduation Status", x = "Ethnicity", y = "Frequency") +
+  theme_minimal() +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+p4
+
+```
+
+```{r Create bar chart of categorical variable, Parent Education Level Code}
+# Create frequency table
+freq_table5 <- table(final_data$Parent_Education_Level_Code)
+
+# Convert frequency table to data frame for plotting
+df_freq5 <- as.data.frame(freq_table5)
+colnames(df_freq5) <- c("Either Parent Completed a 4 Year Degree? Code", "Frequency")
+
+# Plot using ggplot2
+p5 <- ggplot(df_freq5, aes(x = `Either Parent Completed a 4 Year Degree? Code`, y = Frequency, fill = `Either Parent Completed a 4 Year Degree? Code`)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of `Either Parent Completed a 4 Year Degree? Code`") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Either Parent Completed a 4 Year Degree? Code")
+
+p5
+
+# Create frequency table with Parent_Education_Level_Code and Graduated
+freq_table5 <- table(final_data$Parent_Education_Level_Code, final_data$Graduated)
+
+# Convert frequency table to data frame for plotting
+df_freq5 <- as.data.frame(freq_table5)
+colnames(df_freq5) <- c("Parent_Education_Level_Code", "Graduated", "Frequency")
+
+# Plot using ggplot2
+p5 <- ggplot(df_freq5, aes(x = Parent_Education_Level_Code, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Distribution of Graduation Status by Parental Education Level", 
+       x = "Parent Education Level Code", 
+       y = "Frequency") +
+  theme_minimal() +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+print(p5)
+```
+
+```{r Create bar chart of categorical variable, Degree Type}
+# Create frequency table
+freq_table6 <- table(final_data$Degree_Type)
+
+# Convert frequency table to data frame for plotting
+df_freq6 <- as.data.frame(freq_table6)
+colnames(df_freq6) <- c("Degree Type", "Frequency")
+
+# Filter out "None Reported" category
+df_freq6 <- df_freq6[df_freq6$`Degree Type` != "None Reported", ]
+
+# Plot using ggplot2
+p6 <- ggplot(df_freq6, aes(x = `Degree Type`, y = Frequency, fill = `Degree Type`)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Degree Type") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Degree Type")
+
+p6
+```
+
+```{r Create bar chart of categorical variable, STEM students}
+# Create frequency table
+freq_table7 <- table(final_data$STEM_students)
+
+# Convert frequency table to data frame for plotting
+df_freq7 <- as.data.frame(freq_table7)
+colnames(df_freq7) <- c("STEM_student", "Frequency")
+
+# Plot using ggplot2
+p7 <- ggplot(df_freq7, aes(x = STEM_student, y = Frequency, fill = STEM_student)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of STEM Student") +
+  theme_minimal() +
+  scale_fill_discrete(name = "STEM Student")
+
+p7
+
+# Create frequency table with STEM_students and Graduated
+freq_table7 <- table(final_data$STEM_students, final_data$Graduated)
+
+# Convert frequency table to data frame for plotting
+df_freq7 <- as.data.frame(freq_table7)
+colnames(df_freq7) <- c("STEM_student", "Graduated", "Frequency")
+
+# Plot using ggplot2
+p7 <- ggplot(df_freq7, aes(x = STEM_student, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Distribution of STEM Students by Graduation Status", 
+       x = "STEM Student", 
+       y = "Frequency") +
+  theme_minimal() +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes"))
+
+# Print the plot
+print(p7)
+
+```
+
+```{r Create bar chart of categorical variable, Degree Org Center}
+# Create frequency table
+freq_table8 <- table(final_data$Degree_Org_Center)
+
+# Convert frequency table to data frame for plotting
+df_freq8 <- as.data.frame(freq_table8)
+colnames(df_freq8) <- c("Degree Academic Org/Center", "Frequency")
+
+# Filter out "None Reported" category
+df_freq8 <- df_freq8[df_freq8$`Degree Academic Org/Center` != "None Reported", ]
+
+# Plot using ggplot2
+p8 <- ggplot(df_freq8, aes(x = `Degree Academic Org/Center`, y = Frequency, fill = `Degree Academic Org/Center`)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Degree Academic Org/Center") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Degree Academic Org/Center")
+
+p8
+```
+
+```{r Create bar chart of categorical variable, Degree Completion Term}
+# Create frequency table
+freq_table9 <- table(final_data$Degree_Completion_Term)
+
+# Convert frequency table to data frame for plotting
+df_freq9 <- as.data.frame(freq_table9)
+colnames(df_freq9) <- c("Degree Completion Term", "Frequency")
+
+# Filter out "None Reported" category
+df_freq9 <- df_freq9[df_freq9$`Degree Completion Term` != "None Reported", ]
+
+# Plot using ggplot2
+p9 <- ggplot(df_freq9, aes(x = `Degree Completion Term`, y = Frequency, fill = `Degree Completion Term`)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Degree Completion Term") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Degree Completion Term") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust x-axis labels
+
+p9
+
+# Create frequency table with Degree_Completion_Term and Degree_Org_Center
+freq_table9 <- table(final_data$Degree_Completion_Term, final_data$Degree_Org_Center)
+
+# Convert frequency table to data frame for plotting
+df_freq9 <- as.data.frame(freq_table9)
+colnames(df_freq9) <- c("Degree_Completion_Term", "Degree_Org_Center", "Frequency")
+
+# Filter out "None Reported" category
+df_freq9 <- df_freq9[df_freq9$Degree_Completion_Term != "None Reported", ]
+
+# Plot using ggplot2 with counts and Degree_Org_Center
+p9 <- ggplot(df_freq9, aes(x = Degree_Completion_Term, y = Frequency, fill = Degree_Org_Center)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = Frequency), position = position_stack(vjust = 0.5), size = 3, color = "black") +  # Add text labels for counts
+  labs(title = "Distribution of Degree Completion Term by Degree Org Center", 
+       x = "Degree Completion Term", 
+       y = "Frequency") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Degree Org Center") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust x-axis labels
+
+# Print the plot
+print(p9)
+
+```
+
+```{r Create bar chart of categorical variable, Primary Program Code}
+# Create frequency table
+freq_table10 <- table(final_data$Primary_Program_Code)
+
+# Convert frequency table to data frame for plotting
+df_freq10 <- as.data.frame(freq_table10)
+colnames(df_freq10) <- c("Primary Program Code", "Frequency")
+
+# Filter out "None Reported" category
+df_freq10 <- df_freq10[df_freq10$`Primary Program Code` != "CLLPL", ]
+
+# Plot using ggplot2 with counts
+p10 <- ggplot(df_freq10, aes(x = `Primary Program Code`, y = Frequency, fill = `Primary Program Code`)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Frequency), vjust = -0.5, size = 3, color = "black") +  # Add text labels for counts
+  labs(title = "Distribution of Primary Program Code") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Primary Program Code") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust x-axis labels
+
+p10
+
+# Create frequency table with Primary_Program_Code and Graduated
+freq_table10 <- table(final_data$Primary_Program_Code, final_data$Graduated)
+
+# Convert frequency table to data frame for plotting
+df_freq10 <- as.data.frame(freq_table10)
+colnames(df_freq10) <- c("Primary_Program_Code", "Graduated", "Frequency")
+
+# Filter out "None Reported" or other specific categories if needed
+#df_freq10 <- df_freq10[df_freq10$Primary_Program_Code != "CLLPL", ]
+
+# Plot using ggplot2 with counts and Graduation status
+p10 <- ggplot(df_freq10, aes(x = Primary_Program_Code, y = Frequency, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = Frequency), position = position_stack(vjust = 0.5), size = 3, color = "white") +  # Add text labels for counts
+  labs(title = "Distribution of Primary Program Code by Graduation Status", 
+       x = "Primary Program Code", 
+       y = "Frequency") +
+  theme_minimal() +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust x-axis labels
+
+# Print the plot
+print(p10)
+
+
+```
+
+```{r Plot of Percentage of Graduates and Non-Graduates by Primary Program Code}
+# Create frequency table with Primary_Program_Code and Graduated
+freq_table <- table(final_data$Primary_Program_Code, final_data$Graduated)
+
+# Convert frequency table to data frame
+df_freq <- as.data.frame(freq_table)
+colnames(df_freq) <- c("Primary_Program_Code", "Graduated", "Frequency")
+
+# Calculate total count per Primary Program Code
+df_total <- df_freq %>%
+  group_by(Primary_Program_Code) %>%
+  summarize(Total = sum(Frequency))
+
+# Join the total counts with the frequency counts
+df_combined <- df_freq %>%
+  left_join(df_total, by = "Primary_Program_Code") %>%
+  mutate(Percentage = (Frequency / Total) * 100) %>%
+  select(Primary_Program_Code, Graduated, Percentage)
+
+# Calculate percentage of graduates (Graduated = "Yes")
+df_percent_grads <- df_combined %>%
+  filter(Graduated == "Yes") %>%
+  select(Primary_Program_Code, Percentage) %>%
+  rename(Percentage_Graduated = Percentage)
+
+# Merge with the original data to keep all categories
+df_combined <- df_combined %>%
+  left_join(df_percent_grads, by = "Primary_Program_Code") %>%
+  filter(!is.na(Percentage_Graduated))
+
+# Arrange by Percentage_Graduated
+df_combined <- df_combined %>%
+  arrange(Percentage_Graduated) %>%
+  mutate(Primary_Program_Code = factor(Primary_Program_Code, levels = unique(Primary_Program_Code)))
+
+# Plot using ggplot2 with stacked bars and adjusted text labels
+p10_percent_stacked <- ggplot(df_combined, aes(x = Primary_Program_Code, y = Percentage, fill = Graduated)) +
+  geom_bar(stat = "identity", position = "stack") +  # Use stack position to stack bars
+  geom_text(aes(label = scales::percent(Percentage / 100)), position = position_stack(vjust = 0.5), size = 3, color = "white", angle = 90) +  # Add vertical white text labels
+  labs(title = "Percentage of Graduates and Non-Graduates by Primary Program Code", 
+       x = "Primary Program Code", 
+       y = "Percentage") +
+  theme_minimal() +
+  scale_fill_manual(values = c("red", "blue"), name = "Graduated", labels = c("No", "Yes")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust x-axis labels
+
+# Print the plot
+print(p10_percent_stacked)
+
+
+```
+
+```{r Prep data for Analysis}
+GradData_final <- cbind(GradData_imputed[, c("Cumulative_GPA_standardized", 
+                                 "Age_standardized",
+                                 "AvgLoad_standardized", 
+                                 "AvgEconDisScore_standardized", 
+                                 "YearsInProgram_standardized",
+                                 "Avg_Enrollment_Date_standardized"
+                                 )],
+                  dummy_variables,
+                  Graduated = GradData_imputed$Graduated
+                  )
+
+# Rename the variables
+names(GradData_final)[names(GradData_final) == "EthnicityHawaiian/Pacific Islander"] <- "Ethnicity_Hawaiian_Pacific_Islander"
+names(GradData_final)[names(GradData_final) == "EthnicityMulti Racial"] <- "EthnicityMulti_Racial"
+names(GradData_final)[names(GradData_final) == "Retention2 terms"] <- "Retention2_terms"
+names(GradData_final)[names(GradData_final) == "Retention3+ terms"] <- "Retention3plus_terms"
+names(GradData_final)[names(GradData_final) == "RetentionNot Retained"] <- "RetentionNot_Retained"
+
+GradData_final <- GradData_final[, !names(GradData_final) %in% c("GraduatedYes")]
+
+```
+
+```{r Train and Test Data on Imputed Values}
+set.seed(123)  # For reproducibility
+train_index <- sample(nrow(GradData_final), 0.7 * nrow(GradData_final))
+
+train_data <- GradData_final[train_index, ]
+test_data <- GradData_final[-train_index, ]
+
+# Convert response variable to factor
+train_data$Graduated <- factor(train_data$Graduated)
+test_data$Graduated <- factor(test_data$Graduated)
+
+```
+
+```{r Logistic Regression optimal threshold calc}
+
+# Define cross-validation control with correct seeds format
+ctrl <- trainControl(method = "cv",    # Cross-validation method
+                     number = 5,       # Number of folds
+                     verboseIter = TRUE,  # Print progress
+                     seeds = list(seed = 123, 1, 2, 3, 4, 5)   # Provide a list of seeds
+)
+
+# Formula for your model
+formula <- as.formula("Graduated ~ .")
+
+# Train logistic regression model
+set.seed(123)  # For reproducibility
+logit_model <- train(formula,
+                     data = train_data,
+                     method = "glm",
+                     trControl = ctrl,
+                     preProcess = c("center", "scale")  # Standardize predictors
+)
+
+# Predict probabilities on test set
+predictions <- predict(logit_model, newdata = test_data, type = "prob")
+
+# Convert predicted probabilities to factors based on threshold
+predicted_class <- ifelse(predictions$`Yes` > 0.5, "Yes", "No")
+
+# Align factor levels of predicted_class with test_data$Graduated
+predicted_class <- factor(predicted_class, levels = levels(test_data$Graduated))
+
+# Evaluate performance
+confusionMatrix(predicted_class, reference = test_data$Graduated)
+
+# Calculate ROC curve
+roc_curve <- roc(test_data$Graduated, as.numeric(predictions$Yes))
+
+# Plot ROC curve
+plot(roc_curve, main = "ROC Curve", col = "blue")
+
+# Calculate AUC-ROC
+auc_roc <- auc(roc_curve)
+
+# Print AUC-ROC
+auc_roc
+
+# Calculate confusion matrix
+cm <- confusionMatrix(predicted_class, test_data$Graduated)
+
+# Extract true positives, false positives, and false negatives from confusion matrix
+TP <- cm$table[2, 2]  # True Positives
+FP <- cm$table[1, 2]  # False Positives
+FN <- cm$table[2, 1]  # False Negatives
+
+# Calculate precision
+precision <- TP / (TP + FP)
+
+# Calculate recall (sensitivity)
+recall <- TP / (TP + FN)
+
+# Calculate F1-score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print F1-score
+print(paste("F1-score:", f1_score))
+
+# Calculate Youden's J statistic
+youden <- roc_curve$sensitivities + roc_curve$specificities - 1
+
+# Find the optimal threshold index (where Youden's J is maximum)
+optimal_index <- which.max(youden)
+
+# Extract the optimal threshold
+optimal_threshold <- roc_curve$thresholds[optimal_index]
+
+# Print optimal threshold
+optimal_threshold
+
+```
+
+```{r Logisitic Regression with Tuning C, best performance was lambda at 0.1}
+
+param_grid <- expand.grid(
+  alpha = 1,   # 0 for ridge (L2), 1 for lasso (L1)
+  lambda = c(0.001, 0.01, 0.1, 1, 10, 100)
+)
+
+formula <- as.formula("Graduated ~ .")
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  verboseIter = TRUE,
+  seeds = list(seed = 123, 1, 2, 3, 4, 5),
+  allowParallel = TRUE
+)
+
+set.seed(123)
+logit_model <- train(
+  formula,
+  data = train_data,
+  method = "glmnet",
+  trControl = ctrl,
+  preProcess = c("center", "scale"),
+  tuneGrid = param_grid,
+  family = "binomial"
+)
+
+# Extract lambda values and corresponding results
+lambda_values <- param_grid$lambda
+confusion_matrices <- list()
+```
+
+```{r Logistic Regression with regularization, 0.1 threshold adjustment, 0.01 lambda}
+
+ctrl <- trainControl(method = "cv",    # Cross-validation method
+                     number = 5,       # Number of folds
+                     verboseIter = TRUE,  # Print progress
+                     seeds = list(seed = 123, 1, 2, 3, 4, 5)
+)
+
+formula <- as.formula("Graduated ~ .")
+
+# Parameter grid for tuning
+param_grid <- expand.grid(
+  alpha = 0,                   # 0 for ridge (regularization)
+  lambda = 0.01                 # Fixed lambda value you want to set
+)
+
+# Train logistic regression model with glmnet and set lambda = 0.01
+set.seed(123)  # For reproducibility
+logit_model <- train(
+  formula,
+  data = train_data,
+  method = "glmnet",            # Logistic regression method with glmnet
+  trControl = ctrl,             # Cross-validation control
+  preProcess = c("center", "scale"),  # Preprocessing: standardize predictors
+  tuneGrid = param_grid,        # Parameter grid for tuning (including lambda)
+  family = "binomial"           # Binomial family for logistic regression
+)
+
+# Predict probabilities on test set
+predictions <- predict(logit_model, newdata = test_data, type = "prob")
+
+# Calculate AUC
+roc_obj <- roc(test_data$Graduated, predictions$`Yes`)
+auc_score <- auc(roc_obj)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve", col = "blue")
+
+# Convert predicted probabilities to class labels based on optimal threshold
+predicted_class <- ifelse(predictions$`Yes` > 0.1, "Yes", "No")
+
+# Align factor levels of predicted_class with test_data$GraduatedYes
+predicted_class <- factor(predicted_class, levels = levels(test_data$Graduated))
+
+# Compute confusion matrix
+cm <- confusionMatrix(predicted_class, reference = test_data$Graduated)
+
+# Calculate precision and recall
+precision <- cm$byClass["Pos Pred Value"]
+recall <- cm$byClass["Sensitivity"]
+
+# Calculate macro F1 score
+macro_f1 <- 2 * (precision * recall) / (precision + recall)
+
+# Display results
+print(cm)
+cat("AUC Score:", auc_score, "\n")
+cat("Macro F1 Score:", macro_f1, "\n")
+
+```
+
+```{r Graduation 5-fold CV, train, predict, confusion matrix with bootstrapped data}
+
+# Bootstrapping Sampling to balance uneven dataset
+set.seed(123)
+boot_indices <- sample(1:nrow(train_data), replace = TRUE, size = nrow(train_data))
+boot_data <- train_data[boot_indices, ]
+
+# Ensure response variable is factor with 2 levels
+boot_data$Graduated <- factor(boot_data$Graduated)
+test_data$Graduated <- factor(test_data$Graduated)
+
+# Define cross-validation control with correct seeds format
+ctrl <- trainControl(method = "cv",    # Cross-validation method
+                     number = 5,       # Number of folds
+                     verboseIter = TRUE,  # Print progress
+                     seeds = list(seed = 123, 1, 2, 3, 4, 5)   # Provide a list of seeds
+)
+
+# Formula for your model
+formula <- as.formula("Graduated ~ .")
+
+# Train logistic regression model
+set.seed(123)  # For reproducibility
+logit_model <- train(formula,
+                     data = boot_data,
+                     method = "glm",
+                     trControl = ctrl,
+                     preProcess = c("center", "scale")  # Standardize predictors
+)
+
+# Predict probabilities on test set
+predictions <- predict(logit_model, newdata = test_data, type = "prob")
+
+# Convert predicted probabilities to factors based on threshold (e.g., 0.5)
+predicted_class <- ifelse(predictions$`Yes` > 0.5, "Yes", "No")
+
+# Align factor levels of predicted_class with test_data$GraduatedYes
+predicted_class <- factor(predicted_class, levels = levels(test_data$Graduated))
+
+# Evaluate performance
+confusionMatrix(predicted_class, reference = test_data$Graduated)
+
+# Predict probabilities on test set
+predictions <- predict(logit_model, newdata = test_data, type = "prob")
+
+
+# Calculate precision and recall
+precision <- cm$byClass["Pos Pred Value"]
+recall <- cm$byClass["Sensitivity"]
+
+# Calculate macro F1 score
+macro_f1 <- 2 * (precision * recall) / (precision + recall)
+
+# Display results
+print(cm)
+cat("AUC Score:", auc_score, "\n")
+cat("Macro F1 Score:", macro_f1, "\n")
+```
+
+```{r Random Forests Model Training}
+
+ctrl <- trainControl(method = "cv",    
+                     number = 5,       
+                     verboseIter = TRUE,  
+                     seeds = list(Seed1 = c(123, 234, 345),
+                                  Seed2 = c(456, 567, 678),
+                                  Seed3 = c(789, 890, 901),
+                                  Seed4 = c(111, 222, 333),
+                                  Seed5 = c(444, 555, 666),
+                                  Seed6 = c(777, 888, 999))
+)
+
+formula <- as.formula("Graduated ~ .")
+
+# Train Random Forest model
+set.seed(123)  
+rf_model <- train(formula,
+                  data = train_data,
+                  method = "rf",    # Random Forest method
+                  trControl = ctrl
+)
+
+```
+
+```{r RF probs, AUCROC, F1 with threshold adjusment 0.1}
+# Predict on test set
+predictions <- predict(rf_model, newdata = test_data, type = "prob")
+
+# Extract predicted probabilities for the positive class
+predictions_prob <- predictions[, "Yes"]
+
+# Convert predicted probabilities to factors based on threshold (e.g., 0.1)
+predicted_class <- ifelse(predictions_prob > 0.1, "Yes", "No")
+predicted_class <- factor(predicted_class, levels = levels(test_data$Graduated))
+
+# Calculate confusion matrix
+cm <- confusionMatrix(predicted_class, reference = test_data$Graduated)
+
+# Calculate ROC curve
+roc_obj <- roc(as.numeric(test_data$Graduated == "Yes"), predictions_prob)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve")
+
+# Calculate AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+# Define function to compute F1 score
+f1 <- function(data, lev = NULL, model = NULL) {
+  cm <- confusionMatrix(data = data, reference = lev)
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  return(f1_score)
+}
+
+# Compute macro-average F1 score
+macro_avg_f1 <- f1(data = predicted_class, lev = test_data$Graduated)
+print(paste("Macro-average F1 Score:", macro_avg_f1))
+
+```
+
+```{r Optimal number of trees from Random Forest Model}
+# Access OOB error rates from the model
+oob_error <- rf_model$finalModel$err.rate[, "OOB"]
+
+# Find the optimal number of trees with the minimum OOB error
+optimal_trees <- which.min(oob_error)
+
+# Plot OOB error vs number of trees
+plot(1:length(oob_error), oob_error, type = "b", 
+     xlab = "Number of Trees", ylab = "OOB Error",
+     main = "OOB Error vs Number of Trees")
+abline(v = optimal_trees, col = "red", lty = 2)
+legend("topright", legend = paste("Optimal Trees =", optimal_trees), col = "red", lty = 2)
+
+```
+
+```{r Variable importance Plot for Random Forest Model}
+data <- GradData_final
+
+set.seed(123)
+train_index <- createDataPartition(data$Graduated, p = 0.7, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+train_data$Graduated <- factor(train_data$Graduated)
+
+# Train random forest model
+rf_model <- randomForest(Graduated ~ ., data = train_data, ntree = 487, maxdepth = 5)
+
+# Evaluate model performance
+test_data$Graduated <- factor(test_data$Graduated)
+predictions <- predict(rf_model, newdata = test_data)
+confusionMatrix(predictions, reference = test_data$Graduated)
+
+# Plot importance of variables
+varImpPlot(rf_model)
+
+```
+
+```{r Bootstrapping and RF_bs model}
+# Bootstrapping
+set.seed(123)
+boot_indices <- sample(1:nrow(train_data), replace = TRUE, size = nrow(train_data))
+boot_data <- train_data[boot_indices, ]
+
+# Train a model on the bootstrapped data
+rf_model_bs <- train(Graduated ~ ., data = boot_data, method = "rf")
+
+# Predict on test set
+predictions <- predict(rf_model_bs, newdata = test_data, type = "prob")
+
+# Convert predicted probabilities to factors based on threshold (e.g., 0.1)
+predicted_class <- ifelse(predictions[, "Yes"] > 0.1, "Yes", "No")
+
+# Convert to factor
+predicted_class <- factor(predicted_class, levels = levels(test_data$Graduated))
+
+# Calculate confusion matrix
+cm <- confusionMatrix(predicted_class, reference = test_data$Graduated)
+
+# Extract accuracy from confusion matrix
+accuracy <- cm$overall["Accuracy"]
+
+# Print accuracy
+print(paste("Accuracy:", accuracy))
+
+# Predict probabilities on test set
+predictions_prob <- predict(rf_model_bs, newdata = test_data, type = "prob")
+
+# Extract probabilities for the positive class
+predictions <- predictions_prob[, "Yes"]
+
+# Calculate ROC curve
+roc_obj <- roc(test_data$GraduatedYes, predictions)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve")
+
+# Calculate AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+# Define function to compute F1 score
+f1 <- function(data, lev = NULL, model = NULL) {
+  cm <- confusionMatrix(data = data, reference = lev)
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  return(f1_score)
+}
+
+# Convert predicted probabilities to factors based on threshold (e.g., 0.5)
+predicted_class <- ifelse(predictions > 0.1, "Yes", "No")
+predicted_class <- factor(predicted_class, levels = levels(test_data$Graduated))
+
+# Compute macro-average F1 score
+macro_avg_f1 <- f1(data = predicted_class, lev = test_data$Graduated)
+print(paste("Macro-average F1 Score:", macro_avg_f1))
+
+```
+
+```{r SVM on GradData}
+
+ctrl <- trainControl(
+  method = "cv",           
+  number = 5,              # Number of folds
+  verboseIter = TRUE,    
+  seeds = list(
+    Seed1 = c(123, 234, 345, 456, 567),
+    Seed2 = c(111, 222, 333, 444, 555),
+    Seed3 = c(222, 333, 444, 555, 666),
+    Seed4 = c(333, 444, 555, 666, 777),
+    Seed5 = c(444, 555, 666, 777, 888),
+    Seed6 = 999             
+  ),
+  allowParallel = TRUE     
+)
+
+formula <- as.formula("Graduated ~ .")
+
+# Parameter grid for tuning
+param_grid <- expand.grid(
+  cost = c(0.1, 1, 10),     
+  gamma = c(0.1, 1, 10)    
+)
+
+# Train SVM model with hyperparameter tuning
+set.seed(123) 
+tuned_svm_model <- svm(
+  formula,                   
+  data = train_data,
+  cross = 5,                 
+  scale = TRUE,              
+  type = "C-classification",  # SVM (classification)
+  kernel = "radial",          # Kernel type (radial basis function)
+  cost = param_grid$cost,     # Cost parameter from param_grid
+  gamma = param_grid$gamma,    # Gamma parameter from param_grid
+  probability = TRUE
+)
+
+```
+
+```{r Extract Best Cost Parameter from SVM Model}
+# Find the index of the row with the highest accuracy
+best_index <- which.max(tuned_svm_model$accuracies)
+
+# Extract the best cost (C) parameter
+best_cost <- tuned_svm_model$cost[best_index]
+
+# Print the best cost value
+print(paste("Best Cost (C):", best_cost))
+```
+
+```{r SVM Predictions, Confusion Matrix, AUCROC, F1 scores}
+predictions_scores <- predict(tuned_svm_model, newdata = test_data, probability = TRUE)
+predictions_prob <- attr(predictions_scores, "probabilities")[, "Yes"]
+
+# Evaluate performance
+confusionMatrix(predictions_scores, test_data$Graduated)
+
+# Compute ROC curve object
+roc_obj <- roc(test_data$Graduated, predictions_prob)
+
+# Plot ROC curve (optional)
+plot(roc_obj, main = "ROC Curve")
+
+# Calculate AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+# Define function to compute F1 score
+f1 <- function(data, lev = NULL, model = NULL) {
+  cm <- confusionMatrix(data = data, reference = lev)
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  return(f1_score)
+}
+
+# Convert predicted probabilities to factors based on threshold 
+threshold <- 0.1 # Adjust this threshold as needed
+predicted_class <- ifelse(predictions_prob > threshold, "Yes", "No")
+predicted_class <- factor(predicted_class, levels = levels(test_data$Graduated))
+
+# Compute macro-average F1 score
+macro_avg_f1 <- f1(data = predicted_class, lev = test_data$Graduated)
+print(paste("Macro-average F1 Score:", macro_avg_f1))
+```
+
+```{r XGBOOST}
+
+ctrl <- trainControl(
+  method = "cv",           # Cross-validation method
+  number = 5,              # Number of folds
+  seeds = list(
+    Seed1 = c(11,22,33,44,55,66,77,88,99),
+    Seed2 = c(111, 222, 333, 444, 555, 666,777,888,999),
+    Seed3 = c(1,2,3,4,5,6,7,8,9),
+    Seed4 = c(1111,2222,3333,4444,5555,6666,7777,8888,9999),
+    Seed5 = c(11111,22222,333333,44444,55555,666666,777777,8888888,999999),
+    Seed6 = 101         
+  ),
+  allowParallel = TRUE    
+)
+
+formula <- as.formula("Graduated ~ .")
+
+# Parameter grid for tuning
+param_grid <- expand.grid(
+  nrounds = c(50, 100, 150),  # Number of boosting rounds
+  max_depth = c(3, 6, 9),     # Maximum depth of trees
+  eta = c(0.01, 0.1, 0.3),    # Learning rate
+  gamma = 0,                  # Minimum loss reduction required to make a further partition on a leaf node
+  colsample_bytree = 1,       # Subsample ratio of columns when constructing each tree
+  min_child_weight = 1,       # Minimum sum of instance weight needed in a child
+  subsample = 1 
+)
+
+# Train XGBoost model with hyperparameter tuning
+set.seed(123)  # For reproducibility
+tuned_xgb_model <- train(
+  formula,                    # Use the formula defined earlier
+  data = train_data,
+  method = "xgbTree",         # XGBoost method for tree-based models
+  trControl = ctrl,           # Use the defined control parameters
+  tuneGrid = param_grid,      # Specify the entire parameter grid for tuning
+  preProcess = c("center", "scale")  # Standardize predictors if needed
+)
+
+```
+
+```{r Best parameters from XGBoost model tuning}
+best_params_XGB <- tuned_xgb_model$bestTune
+
+best_params_XGB
+```
+
+```{r XGBoost Tuned Model ROC curve, AUCROC value}
+# Predict probabilities on test set
+predictions_prob <- predict(tuned_xgb_model, newdata = test_data, type = "prob")[, "Yes"]
+
+# Compute ROC curve object
+roc_obj <- roc(test_data$Graduated, predictions_prob)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve")
+
+# Calculate AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+# Define function to compute macro-average F1 score
+macro_avg_f1 <- function(data, lev = NULL, model = NULL) {
+  cm <- confusionMatrix(data = data, reference = lev)
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  return(mean(f1_score, na.rm = TRUE))
+}
+
+# Convert predicted probabilities to factor based on threshold
+predicted_class <- factor(ifelse(predictions_prob > 0.1, "Yes", "No"),
+                          levels = levels(test_data$Graduated))
+
+cm <- confusionMatrix(predicted_class, reference = test_data$Graduated)
+cm
+
+# Compute macro-average F1 score
+macro_f1 <- macro_avg_f1(predicted_class, lev = test_data$Graduated)
+cat("Macro-average F1 Score:", macro_f1, "\n")
+
+```
+
+```{r Calculate VIF for each predictor}
+formula <- as.formula("Graduated ~ .")
+
+# Extract best model
+best_xgb_model <- tuned_xgb_model$finalModel
+
+# Check if bestTune is available
+if (!is.null(tuned_xgb_model$bestTune)) {
+  # Extract parameters from bestTune
+  params <- list(
+    objective = "binary:logistic",  #binary classification
+    eval_metric = "auc",            #AUC as evaluation metric
+    max_depth = tuned_xgb_model$bestTune$max_depth,
+    eta = tuned_xgb_model$bestTune$eta,
+    gamma = tuned_xgb_model$bestTune$gamma,
+    colsample_bytree = tuned_xgb_model$bestTune$colsample_bytree,
+    min_child_weight = tuned_xgb_model$bestTune$min_child_weight,
+    subsample = tuned_xgb_model$bestTune$subsample,
+    nthread = 4  # number of cores available for parallel computation
+  )
+  
+  nrounds <- tuned_xgb_model$bestTune$nrounds
+} else {
+  # If bestTune is NULL, manually extract best parameters based on results
+  best_row <- which.max(tuned_xgb_model$results$ROC)  #Maximize ROC
+  params <- list(
+    objective = "binary:logistic",
+    eval_metric = "auc",
+    max_depth = tuned_xgb_model$results$max_depth[best_row],
+    eta = tuned_xgb_model$results$eta[best_row],
+    gamma = tuned_xgb_model$results$gamma[best_row],
+    colsample_bytree = tuned_xgb_model$results$colsample_bytree[best_row],
+    min_child_weight = tuned_xgb_model$results$min_child_weight[best_row],
+    subsample = tuned_xgb_model$results$subsample[best_row],
+    nthread = 4
+  )
+  
+  nrounds <- 100  #number of boosting rounds
+}
+
+# Convert labels to binary format (0s and 1s)
+train_data$Graduated <- as.numeric(as.factor(train_data$Graduated)) - 1
+
+# Create xgb.DMatrix for training data
+train_matrix <- xgb.DMatrix(data = as.matrix(train_data[, -which(names(train_data) %in% "Graduated")]), 
+                            label = train_data$Graduated)
+
+# Train XGBoost model using xgb.train
+xgb_booster <- xgb.train(
+  params = params,        # Parameters from the best model
+  data = train_matrix,    # Training data in xgb.DMatrix format
+  nrounds = nrounds       # Number of boosting rounds from best model
+)
+
+# Compute variable importance
+importance_matrix <- xgb.importance(model = xgb_booster)
+importance_matrix$Importance <- importance_matrix$Importance / sum(importance_matrix$Importance) * 100
+
+# Print feature importance
+print(importance_matrix)
+
+# Plot feature importance
+xgb.plot.importance(importance_matrix)
+
+
+```
+
+```{r XGBoost Variable importance full feature set}
+# Plot feature importance with percentage labels
+library(ggplot2)
+p <- ggplot(importance_matrix, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Student Graduation Feature Importance on Full Feature Set") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels for better readability
+  geom_text(aes(label = paste0(round(Importance, 3), "%")), vjust = -0.5, size = 2.5)  # Add percentage labels above bars
+
+print(p)
+```
+
+```{r Prepare Dummy Variables for reduced feature set analysis XGBoost}
+dummy_variables_XGB <- model.matrix(~ Graduated -1, data = GradData_imputed)
+
+```
+
+```{r Prep data for XGBoost Reduced Feature Set}
+Grad_XGB <- cbind(GradData_final[, c("Cumulative_GPA_standardized", 
+                                 "Age_standardized",
+                                 "AvgLoad_standardized", 
+                                 "YearsInProgram_standardized",
+                                 "Avg_Enrollment_Date_standardized",
+                                 "AvgEconDisScore_standardized"
+                                 )],
+                  dummy_variables_XGB,
+                  Graduated = GradData_final$Graduated
+                  )
+
+Grad_XGB <- Grad_XGB[, !names(Grad_XGB) %in% c("Graduated", "GraduatedNo")]
+```
+
+```{r XGBoost Reduced Feature Set Train and Test Data on Imputed Values}
+set.seed(123)  # For reproducibility
+train_index <- sample(nrow(Grad_XGB), 0.7 * nrow(Grad_XGB))
+
+train_data <- Grad_XGB[train_index, ]
+test_data <- Grad_XGB[-train_index, ]
+
+# Convert response variable to factor
+train_data$GraduatedYes <- factor(train_data$GraduatedYes)
+test_data$GraduatedYes <- factor(test_data$GraduatedYes)
+
+```
+
+```{r Training XGBoost Model on Reduced Feature Set}
+
+# Define cross-validation control with correct seeds format
+ctrl <- trainControl(
+  method = "cv",           # Cross-validation method
+  number = 5,              # Number of folds
+  seeds = list(
+    Seed1 = c(11,22,33,44,55,66,77,88,99),
+    Seed2 = c(111, 222, 333, 444, 555, 666,777,888,999),
+    Seed3 = c(1,2,3,4,5,6,7,8,9),
+    Seed4 = c(1111,2222,3333,4444,5555,6666,7777,8888,9999),
+    Seed5 = c(11111,22222,333333,44444,55555,666666,777777,8888888,999999),
+    Seed6 = 101             # Last element should be a single integer
+  ),
+  allowParallel = TRUE     # Optionally enable parallel processing
+)
+
+# Formula for XGBoost model
+formula <- as.formula("GraduatedYes ~ .")
+
+# Define the parameter grid for tuning
+param_grid <- expand.grid(
+  nrounds = c(50, 100, 150),  # Number of boosting rounds
+  max_depth = c(3, 6, 9),     # Maximum depth of trees
+  eta = c(0.01, 0.1, 0.3),    # Learning rate
+  gamma = 0,                  # Minimum loss reduction required to make a further partition on a leaf node
+  colsample_bytree = 1,       # Subsample ratio of columns when constructing each tree
+  min_child_weight = 1,       # Minimum sum of instance weight needed in a child
+  subsample = 1 
+)
+
+# Train XGBoost model with hyperparameter tuning
+set.seed(123)  # For reproducibility
+reducedfeat_xgb_model <- train(
+  formula,                    # Use the formula defined earlier
+  data = train_data,
+  method = "xgbTree",         # XGBoost method for tree-based models
+  trControl = ctrl,           # Use the defined control parameters
+  tuneGrid = param_grid,      # Specify the entire parameter grid for tuning
+  preProcess = c("center", "scale")  # Standardize predictors
+)
+```
+
+```{r Pulling best parameters out of reduced feature model}
+best_params_XGB_red <- reducedfeat_xgb_model$bestTune
+
+best_params_XGB_red
+```
+
+```{r Predictions, AUCROC, macroF1 score for Reduced Feature Set XGBoost}
+# Predict probabilities on test set
+predictions_prob <- predict(reducedfeat_xgb_model, newdata = test_data, type = "prob")
+
+predictions_prob <- predictions_prob[, 2]
+
+# Convert predicted probabilities to factor based on threshold
+predicted_class <- factor(ifelse(predictions_prob > 0.1, "1", "0"),
+                          levels = levels(test_data$GraduatedYes))
+
+# Evaluate performance
+cm <- confusionMatrix(predicted_class, test_data$GraduatedYes)
+
+# Compute ROC curve object
+roc_obj <- roc(test_data$GraduatedYes, predictions_prob)
+
+# Calculate Youdens J statistic
+youden <- roc_obj$sensitivities + roc_obj$specificities - 1
+
+# Find the optimal threshold index (where Youdens J is maximum)
+optimal_index <- which.max(youden)
+
+# Extract the optimal threshold
+optimal_threshold <- roc_obj$thresholds[optimal_index]
+
+# Plot ROC curve (optional)
+plot(roc_obj, main = "ROC Curve")
+
+# Calculate AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+# Define function to compute macro-average F1 score
+macro_avg_f1 <- function(data, lev = NULL, model = NULL) {
+  cm <- confusionMatrix(data = data, reference = lev)
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  return(mean(f1_score, na.rm = TRUE))
+}
+
+# Compute macro-average F1 score
+macro_f1 <- macro_avg_f1(predicted_class, lev = test_data$Graduated)
+cat("Macro-average F1 Score:", macro_f1, "\n")
+
+```
+
+```{r Variable Importance for Reduced Feature Set XGBoost}
+formula <- as.formula("GraduatedYes ~ .")
+
+# Extract best model
+best_xgb_model <- reducedfeat_xgb_model$finalModel
+
+# Check if bestTune is available
+if (!is.null(reducedfeat_xgb_model$bestTune)) {
+  # Extract parameters from bestTune
+  params <- list(
+    objective = "binary:logistic",  #binary classification
+    eval_metric = "auc",            #AUC as evaluation metric
+    max_depth = reducedfeat_xgb_model$bestTune$max_depth,
+    eta = reducedfeat_xgb_model$bestTune$eta,
+    gamma = reducedfeat_xgb_model$bestTune$gamma,
+    colsample_bytree = reducedfeat_xgb_model$bestTune$colsample_bytree,
+    min_child_weight = reducedfeat_xgb_model$bestTune$min_child_weight,
+    subsample = reducedfeat_xgb_model$bestTune$subsample,
+    nthread = 4  # number of cores available for parallel computation
+  )
+  
+  nrounds <- reducedfeat_xgb_model$bestTune$nrounds
+} else {
+  # If bestTune is NULL, manually extract best parameters based on results
+  best_row <- which.max(reducedfeat_xgb_model$results$ROC)  #Maximize ROC
+  params <- list(
+    objective = "binary:logistic",
+    eval_metric = "auc",
+    max_depth = reducedfeat_xgb_model$results$max_depth[best_row],
+    eta = reducedfeat_xgb_model$results$eta[best_row],
+    gamma = reducedfeat_xgb_model$results$gamma[best_row],
+    colsample_bytree = reducedfeat_xgb_model$results$colsample_bytree[best_row],
+    min_child_weight = reducedfeat_xgb_model$results$min_child_weight[best_row],
+    subsample = reducedfeat_xgb_model$results$subsample[best_row],
+    nthread = 4
+  )
+  
+  nrounds <- 150  #number of boosting rounds
+}
+
+# Convert labels to binary format (0s and 1s)
+train_data$GraduatedYes <- as.numeric(as.factor(train_data$GraduatedYes)) - 1
+
+# Create xgb.DMatrix for training data
+train_matrix <- xgb.DMatrix(data = as.matrix(train_data[, -which(names(train_data) %in% "GraduatedYes")]), 
+                            label = train_data$GraduatedYes)
+
+# Train XGBoost model using xgb.train
+xgb_booster <- xgb.train(
+  params = params,        # Parameters from the best model
+  data = train_matrix,    # Training data in xgb.DMatrix format
+  nrounds = nrounds       # Number of boosting rounds from best model
+)
+
+# Compute variable importance
+importance_matrix <- xgb.importance(model = xgb_booster)
+importance_matrix$Importance <- importance_matrix$Importance / sum(importance_matrix$Importance) * 100
+
+# Print feature importance
+print(importance_matrix)
+
+# Plot feature importance
+xgb.plot.importance(importance_matrix)
+
+
+```
+
+```{r Plot variable importance of reduced features set XGBoost}
+# Plot feature importance with percentage labels
+library(ggplot2)
+p2 <- ggplot(importance_matrix, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Student Graduation Feature Importance on Reduced Feature Set") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels for better readability
+  geom_text(aes(label = paste0(round(Importance, 3), "%")), vjust = -0.5, size = 4.5)  # Add percentage labels above bars
+
+print(p2)
+```
+

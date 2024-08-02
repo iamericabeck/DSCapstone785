@@ -1,0 +1,529 @@
+---
+title: "Data Prep-Capstone Project"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r Load data and libraries}
+#load data from Access spreadsheets
+library(readxl)
+library(readr)
+library(dplyr)
+
+StudentInfo <- read_csv("04Jul2024_StudentInfo.csv")
+
+#StudentInfo <- read_excel("04Jul2024_StudentInfo.xlsx") #has been filtered for ESM programs only
+#ESM program codes:("AMSTC", "BIPWR", "BLDGS", "CIVIL", "CLLPL", "CTELE", "CTFMT", "CTINA", "CTREN", "CTSDA", "CUSTS", "EASSM", "ELECT", "ELENG", "ELMCL", "ELMNT", "ELSVT", "HVABC", "HVACR", "IMADV", "IMFAC", "INDMN", "INELA", "MECHD", "MHVAC", "MMILL", "MNTCA", "STECS", "STESE")
+
+#Rows: 653,317 
+```
+
+```{r Filter blank rows}
+library(tidyr)
+#remove all blank rows that were filtered based on ESM programs only
+StudentInfo <- StudentInfo %>% drop_na(`Student Emplid`)
+
+#Rows: 134,456
+```
+
+```{r Remove rows with value of zero}
+#remove all rows with value of 0 for "Term Units Passed" and "No Unit Load" for Academic Load
+StudentInfoTUP <- StudentInfo %>%
+  filter(`Term Units Passed` != 0 & `Academic Load` != "No Unit Load")
+
+#Rows: 101,686
+
+#check column for values
+table(StudentInfoTUP$`Term Units Passed`)
+```
+
+```{r Check column Either Parent Completed a 4 Year Degree}
+#check column for values
+table(StudentInfoTUP$`Either Parent Completed a 4 Year Degree? Code`)
+```
+
+```{r Change column values for Either Parent Completed a 4 Year Degree}
+# Change U to N, R to N, and Y to B
+StudentInfoTUP <- StudentInfoTUP %>%
+  mutate(`Either Parent Completed a 4 Year Degree? Code` = case_when(
+    `Either Parent Completed a 4 Year Degree? Code` == 'U' ~ 'N',
+    `Either Parent Completed a 4 Year Degree? Code` == 'R' ~ 'N',
+    `Either Parent Completed a 4 Year Degree? Code` == 'Y' ~ 'B',
+    TRUE ~ `Either Parent Completed a 4 Year Degree? Code`  # Keep other values unchanged
+  )) %>%
+  mutate(`Either Parent Completed a 4 Year Degree? Code` = coalesce(`Either Parent Completed a 4 Year Degree? Code`, "N"))
+
+#check column for values
+table(StudentInfoTUP$`Either Parent Completed a 4 Year Degree? Code`)
+```
+
+```{r Modify Gender column}
+# Replace values other than "Female" and "Male" with "unknown"
+StudentInfoTUP$Gender <- ifelse(StudentInfoTUP$Gender %in% c("Female", "Male"), StudentInfoTUP$Gender, "Unknown")
+
+# Check unique values in 'Gender' column after transformation
+unique_genders_after <- unique(StudentInfoTUP$Gender)
+```
+
+```{r Create Academic Load column}
+#created a column based on 'Academic Load' where values are assigned as follows: 'Enrolled Full-Time' = 1, 'Three Quarters Time' = 0.75, 'Enrolled Half-Time' = 0.5, and 'Less than Half-Time' = 0.25
+
+StudentInfoTUP <- StudentInfoTUP %>%
+  mutate(AcademicLoadValue = case_when(
+    `Academic Load` == 'Enrolled Full-Time' ~ 1,
+    `Academic Load` == 'Three Quarter Time' ~ 0.75,
+    `Academic Load` == 'Enrolled Half-Time' ~ 0.5,
+    `Academic Load` == 'Less than Half-Time' ~ 0.25,
+    TRUE ~ NA_real_  # Assign NA for any other values
+  ))
+
+#check column for values
+table(StudentInfoTUP$AcademicLoadValue)
+```
+
+```{r create EconDisValue}
+#created a column based on 'Economically Disadvantaged' where values are assigned as follows: 'No' = 0, 'NA' = 0, 'Refuse to Provide' = 0, and 'Yes' = 1
+
+StudentInfoTUP <- StudentInfoTUP %>%
+  mutate(EconomicDisadvantageValue = case_when(
+    `Economically Disadvantaged` %in% c('No', NA, 'Refuse to Provide') ~ 0,
+    `Economically Disadvantaged` == 'Yes' ~ 1,
+    TRUE ~ NA_integer_  # Assign NA for any other values
+  ))
+
+#check column for values
+table(StudentInfoTUP$EconomicDisadvantageValue)
+```
+
+```{r Filter values out from CLLPL}
+# Values to filter out from CLLPL (Liberal Arts Transfer) that are not ESM-based
+filter_values <- c(
+  "208001-A - LAT-A Arts & Humanities (M)", 
+  "108003-A - Liberal Arts Transfer (M)", 
+  "208001-AET - LAT-A Arts & Humanities (M)", 
+  "208001-ED - LAT-A Education (M)", 
+  "208001-EB - LAT-A Econ & Pre-Business (M)", 
+  "208001-SS - LAT-A Social Sciences (M)", 
+  "208001-AAC - LAT-A Arts & Humanities (M)"
+)
+```
+
+```{r Filter non-ESM based program values from Primary Plan by Term}
+# Filter out the non-ESM based program specified values
+ESMonly_StudentInfo <- StudentInfoTUP %>%
+  filter(!(`Primary Plan by Term (M)` %in% filter_values))
+
+#Rows: 59,442
+```
+
+```{r Create Avg Load and Avg EconDisScore and Years in Program columns}
+#created separate table of metrics that are associated with one unique 'Student Emplid' from dataframe 'StudentInfoTUP', metrics include:
+
+#new column 'Avg Load' = 'AcademicLoadValue' / count of 'Student Emplid'
+
+#new column 'Avg EconDisScore' = 'EconomicDisadvantageValue' / count of 'Student Emplid'
+
+#new column 'YearsInProgram' = (max value of 'Class Term Code' (for each unique 'Student Emplid') - 'First Degree Enrollment Term')/10
+
+summary_table <- ESMonly_StudentInfo %>%
+  group_by(`Student Emplid`) %>%
+  summarise(
+    AvgLoad = sum(AcademicLoadValue, na.rm = TRUE) / n(),
+    AvgEconDisScore = sum(EconomicDisadvantageValue, na.rm = TRUE) / n(),
+    YearsInProgram = (max(`Class Term Code`, na.rm = TRUE) - `First Degree Enrollment Term`[1]) / 10
+  ) %>%
+  mutate(YearsInProgram = as.numeric(YearsInProgram)) 
+```
+
+```{r Retain only current term}
+#retain only the rows of the most current term that a student was registered for (max value for class term column)
+
+ClassTermFilter <- ESMonly_StudentInfo %>%
+  group_by(`Student Emplid`) %>%
+  slice_max(order_by = `Class Term Code`, n = 1) %>%
+  ungroup()
+
+#Rows: 19,152
+```
+
+```{r Check for duplicates}
+#check for duplicate entries
+
+duplicate_rows <- ClassTermFilter %>%
+  group_by(`Student Emplid`) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+print(duplicate_rows)
+```
+
+```{r Join student info to classtermfilter}
+#join summary metrics from ESMonly_StudentInfo to ClassTermFilter as additional columns
+
+StudentInfoMetrics <- ClassTermFilter %>%
+  left_join(summary_table, by = "Student Emplid")
+```
+
+```{r Remove columns used to create other columns}
+#remove columns that were used to generate other columns when dataframe had multiple entries for each student based on each term they were enrolled in a program (Academic Load, Term Units Taken, Term Units Passed, Term GPA, Economically Disadvantaged, Academic Load VAlue, Economic Disadvantage Value)
+StudentInfoMetrics <- StudentInfoMetrics %>%
+  select(-4, -5, -6, -8, -14, -23, -24)
+```
+
+```{r Load ESM data}
+#load ESM Grad data
+
+GradData_ESM_only <- read_excel("GradData_ESM_only.xlsx")
+
+#Rows: 2,443
+```
+
+```{r Max value for degree completion term code}
+#keep only the rows with the maximum value for column 'Degree Completion Term Code' from dataframe 'GradData_ESM_only' for each unique 'Student Emplid'
+
+GradData_ESM_only_max <- GradData_ESM_only %>%
+  group_by(`Student Emplid`) %>%
+  filter(`Degree Completion Term Code` == max(`Degree Completion Term Code`, na.rm = TRUE)) %>%
+  ungroup()
+
+#Rows: 2,177
+```
+
+```{r select one unique entry per student emplid}
+#Ensure only one unique entry per 'Student Emplid' by selecting the first occurrence
+GradData_ESM_only_max_unique <- GradData_ESM_only_max %>%
+  arrange(`Student Emplid`) %>%  # Ensure sorted order by Student Emplid
+  distinct(`Student Emplid`, .keep_all = TRUE)  # Keep only the first occurrence of each Student Emplid
+
+#Rows: 1,960
+```
+
+```{r check for duplicates}
+duplicate_rows <- GradData_ESM_only_max_unique %>%
+  group_by(`Student Emplid`) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+print(duplicate_rows)
+```
+
+```{r Merge columns from dataframes}
+# Specify columns to merge
+merge_columns <- c('Student Emplid', 
+                   'Degree Completion Term Code', 
+                   'Degree Completion Term', 
+                   'Degree Type Code', 
+                   'Degree Type', 
+                   'Degree Program', 
+                   'Degree Program Code', 
+                   'Degree Plan', 
+                   'Degree Plan Code', 
+                   'Degree Academic Org/Center')
+
+# Perform the merge
+merged_data <- merge(StudentInfoMetrics, 
+                     GradData_ESM_only_max_unique[, merge_columns], 
+                     by = 'Student Emplid',
+                     all.x = TRUE)  # Keeps all rows from StudentInfoMetrics
+
+#Rows: 19,152
+```
+
+```{r create Graduated column}
+# Create a new column 'Graduated' based on 'Degree Plan'
+merged_data$Graduated <- ifelse(is.na(merged_data$`Degree Plan`), "No", "Yes")
+```
+
+```{r Create Retention column}
+# Create a new column 'Retention' based on 'YearsInProgram'
+merged_data$Retention <- ifelse(merged_data$YearsInProgram == 0, "Not Retained",
+                                ifelse(merged_data$YearsInProgram >= 0.8, "3+ terms", "2 terms"))
+
+```
+
+```{r Modify to include 1 term graduates}
+merged_data$Retention <- ifelse(merged_data$Graduated == "Yes" & merged_data$Retention == "Not Retained", "1 term", merged_data$Retention)
+```
+
+```{r Load Student Grades dataframe}
+#load StudentGrades dataframe
+
+StudentGrades <- read_excel("GradesWithTerm.xlsx")
+
+#Rows: 1,048,575
+```
+
+```{r Remove rows that have enrollment drop dates}
+#filter the StudentGrades dataframe before joining with StudentInfo (ClassTermFilter)
+
+#remove all rows that have an entry for "Enrollment Drop Date", keep only rows from column "Class Completion Status" that contain "Completed Successfully", keep only rows from "Enrollment Status" that contain "Enrolled" from the "StudentGrades" dataframe
+# Remove rows with non-NA Enrollment Drop Date
+
+StudentGrades_filtered <- StudentGrades %>%
+  filter(is.na(`Enrollment Drop Date`)) %>%
+  filter(`Class Completion Status` == "Completed Successfully") %>%
+  filter(`Enrollment Status` == "Enrolled")
+
+StudentGrades_filtered <- StudentGrades_filtered %>%
+  rename(Class_Term = "Class Term")
+
+StudentGrades_filtered <- StudentGrades_filtered %>%
+  rename(Class_Term_Code = "Class Term Code")
+
+StudentGrades_filtered <- StudentGrades_filtered %>%
+  rename(Enrollment_Add_Date = "Enrollment Add Date")
+
+StudentGrades_filtered <- StudentGrades_filtered[, -8]
+
+StudentGrades_filtered$Class_Term_Start <- NA
+#Rows: 599,037
+```
+
+```{r filter for unique entries}
+term_mappings <- unique(StudentGrades_filtered[c("Class_Term_Code", "Class_Term")])
+```
+
+```{r Provide dates for class terms in preparation to generate avg date of enrollment}
+# Assuming 'StudentGrades_filtered' is your dataframe
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1198] <- '2019-01-22'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1200] <- '2019-05-27'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1204] <- '2019-08-26'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1188] <- '2018-01-16'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1190] <- '2018-05-28'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1194] <- '2018-08-27'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1178] <- '2017-01-17'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1180] <- '2017-05-29'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1184] <- '2017-08-28'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1168] <- '2016-01-19'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1170] <- '2016-05-30'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1208] <- '2020-01-21'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1210] <- '2020-05-25'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1160] <- '2015-05-25'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1164] <- '2015-08-31'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1214] <- '2020-08-31'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1218] <- '2021-01-19'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1174] <- '2016-08-29'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1220] <- '2021-05-31'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1224] <- '2021-08-30'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1150] <- '2014-05-26'
+StudentGrades_filtered$Class_Term_Start[StudentGrades_filtered$Class_Term_Code == 1154] <- '2014-08-25'
+
+```
+
+```{r convert columns to date and create enrollment prep column}
+# Convert columns to Date format if they are not already
+StudentGrades_filtered$Enrollment_Add_Date <- as.Date(StudentGrades_filtered$Enrollment_Add_Date)
+StudentGrades_filtered$Class_Term_Start <- as.Date(StudentGrades_filtered$Class_Term_Start)
+
+#creation of "Enrollment_Prep" calculated the number of days before the term started (positive value) or after the term started (negative value) to get a measure of how prepared the student was when registering for their first semester of college.
+
+# Create a new column 'Enrollment_Prep'
+StudentGrades_filtered$Enrollment_Prep <- as.numeric(StudentGrades_filtered$Class_Term_Start - StudentGrades_filtered$Enrollment_Add_Date)
+
+```
+
+```{r Create avg date difference column}
+avg_date_difference <- StudentGrades_filtered %>%
+  group_by(`Student Emplid`) %>%
+  summarize(Avg_Enrollment_Date = mean(Enrollment_Prep, na.rm = TRUE))
+
+#Rows: 102,062
+```
+
+```{r check for duplicates in dataframe}
+# Check for duplicates in 'Student Emplid'
+duplicates <- avg_date_difference %>%
+  group_by(`Student Emplid`) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# Print the duplicates
+print(duplicates)
+```
+
+```{r check for duplicates and print}
+# Check for duplicates in 'Student Emplid'
+duplicates <- merged_data %>%
+  group_by(`Student Emplid`) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# Print the duplicates
+print(duplicates)
+```
+
+```{r Merge dataframes}
+#merge dataframes by adding column 'Avg enrollment date' from avg_date_difference dataframe to merged_data dataframe
+
+# Merge avg_date_difference into merged_data based on Student_Emplid
+merged_data <- merge(merged_data, avg_date_difference, by = "Student Emplid", all.x = TRUE)
+
+```
+
+```{r Load ESM student data}
+#load ESM STEM student data
+
+STEM_students <- read_excel("STEM_Club_Members.xlsx")
+```
+
+```{r merge dataframes stem students}
+# Perform the merge based on 'EMPLID' and 'Student Emplid'
+merged_data <- merge(merged_data,
+                          STEM_students,
+                          by.x = 'Student Emplid',
+                          by.y = 'EMPLID',
+                          all.x = TRUE)  # Keeps all rows from merged_master_df
+
+# Create 'STEM_student' column based on the merge result
+merged_data$STEM_students <- ifelse(!is.na(merged_data$ID), "Yes", "No")
+
+```
+
+```{r remove columns unused in analysis}
+# Identify columns to remove (33 to 41) brought in by STEM student dataframe and are not useful in the analysis
+columns_to_remove <- c(21, 33:41)
+
+# Remove specified columns using negative indexing
+merged_data <- merged_data[, -columns_to_remove]
+```
+
+```{r select unique entry for student emplid}
+# Ensure only one unique entry per 'Student Emplid' by selecting the first occurrence
+
+merged_data <- merged_data %>%
+  group_by(`Student Emplid`) %>%
+  distinct(.keep_all = TRUE) %>%
+  ungroup()
+
+```
+
+```{r check for duplicates in merged data}
+# Check for duplicates in 'Student Emplid'
+duplicates <- merged_data %>%
+  group_by(`Student Emplid`) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# Print the duplicates
+print(duplicates)
+```
+
+```{r merge dataframes}
+merged_data <- merged_data %>%
+  rename(Class_Term_Code = "Class Term Code")
+```
+
+```{r filter for first enrollment term}
+# Filter rows where 'Graduated' is 'Yes' and find the smallest 'Class_Term_Code' (based on first enrollment term of a graduate)
+earliest_term <- merged_data %>%
+  filter(Graduated == 'Yes') %>%
+  summarise(smallest_term = min(Class_Term_Code, na.rm = TRUE))
+
+# View the smallest term
+earliest_term
+```
+
+```{r filter for last enrollment term}
+# Filter rows where 'Graduated' is 'Yes' and find the largest 'Class_Term_Code'(based on last enrollment term of a graduate)
+latest_term <- merged_data %>%
+  filter(Graduated == 'Yes') %>%
+  summarise(largest_term = max(Class_Term_Code, na.rm = TRUE))
+
+#View the largest term
+latest_term
+```
+
+```{r remove rows outside of first and last enrollment term}
+# Remove rows where 'Class_Term_Code' is smaller than 1134 and larger than 1248
+final_data <- merged_data[merged_data$Class_Term_Code >= 1134 & merged_data$Class_Term_Code <= 1248, ]
+
+#Rows: 19,002
+```
+
+```{r Rename Columns to accomodate programming}
+colnames(final_data)[colnames(final_data) == "Age (Term)"] <- "Age"
+colnames(final_data)[colnames(final_data) == "Cumulative GPA"] <- "Cumulative_GPA"
+colnames(final_data)[colnames(final_data) == "Cumulative Credits - GPA"] <- "Cumulative_Credits"
+colnames(final_data)[colnames(final_data) == "Primary Academic Program Code by Term"] <- "Primary_Program_Code"
+colnames(final_data)[colnames(final_data) == "Primary Academic Program by Term"] <- "Primary_Academic_Program"
+colnames(final_data)[colnames(final_data) == "Primary Plan by Term (M)"] <- "Primary_Plan"
+colnames(final_data)[colnames(final_data) == "High School Degree Date"] <- "High_School_Degree_Date"
+colnames(final_data)[colnames(final_data) == "Either Parent Completed a 4 Year Degree? Code"] <- "Parent_Education_Level_Code"
+colnames(final_data)[colnames(final_data) == "Either Parent Highest Education"] <- "Parent_Education_Level"
+colnames(final_data)[colnames(final_data) == "First Degree Enrollment Term"] <- "First_Degree_Term"
+colnames(final_data)[colnames(final_data) == "Current Student Address - Zip 5"] <- "Zip_Code"
+colnames(final_data)[colnames(final_data) == "Degree Completion Term Code"] <- "Degree_Completion_Code"
+colnames(final_data)[colnames(final_data) == "Degree Completion Term"] <- "Degree_Completion_Term"
+colnames(final_data)[colnames(final_data) == "Degree Type Code"] <- "Degree_Type_Code"
+colnames(final_data)[colnames(final_data) == "Degree Type"] <- "Degree_Type"
+colnames(final_data)[colnames(final_data) == "Degree Program"] <- "Degree_Program"
+colnames(final_data)[colnames(final_data) == "Degree Program Code"] <- "Degree_Program_Code"
+colnames(final_data)[colnames(final_data) == "Degree Plan"] <- "Degree_Plan"
+colnames(final_data)[colnames(final_data) == "Degree Plan Code"] <- "Degree_Plan_Code"
+colnames(final_data)[colnames(final_data) == "Degree Academic Org/Center"] <- "Degree_Org_Center"
+```
+
+```{r Convert High School Degree Date to Date format}
+# Convert 'High School Degree Date' to Date format
+final_data$High_School_Degree_Date <- as.Date(final_data$High_School_Degree_Date, format = "%m/%d/%y")
+```
+
+```{r Convert zip_code to factor}
+# Convert zip_code to factor
+final_data$Zip_Code <- factor(final_data$Zip_Code)
+```
+
+```{r Fill in NA values with None Reported for columns associated with obtaining a Degree}
+final_data <- final_data %>%
+  mutate(
+    `Degree_Completion_Term` = ifelse(is.na(`Degree_Completion_Term`), 'None Reported', `Degree_Completion_Term`),
+    `Degree_Org_Center` = ifelse(is.na(`Degree_Org_Center`), 'None Reported', `Degree_Org_Center`),
+    `Degree_Type` = ifelse(is.na(`Degree_Type`), 'None Reported', `Degree_Type`)
+  )
+```
+
+```{r Convert columns to factor categorical variables}
+# Columns to convert to factor (categorical variables)
+columns_to_factor <- c("STEM_students", 
+                       "Gender", 
+                       "Ethnicity", 
+                       "Primary_Academic_Program", 
+                       "Primary_Plan",
+                       "Parent_Education_Level_Code", 
+                       "Degree_Completion_Term", 
+                       "Degree_Type", 
+                       "Degree_Program", 
+                       "Degree_Org_Center", 
+                       "Graduated", 
+                       "Retention")
+
+# Convert columns to factor
+final_data[, columns_to_factor] <- lapply(final_data[, columns_to_factor], as.factor)
+
+# Verify the conversion
+str(final_data)
+```
+
+```{r Remove unneccessary columns}
+# Remove columns 1, 2, 3, and 4 using negative indexing (Cumulative Credits are too highly correlated with Graduation)
+final_data <- final_data[, -c(1:4, 6)]
+```
+
+```{r Remove rows were Age is 0}
+#remove all rows where 'Age' = 0 in final_data dataframe
+
+# Remove rows where Age is equal to 0
+final_data <- final_data[final_data$Age != 0, ]
+
+#Rows: 18,995
+```
+
+```{r save file as CSV}
+# Specify the file path where you want to save the CSV file
+file_path <- "~/Desktop/final_data.csv"
+
+# Save dataframe as CSV
+write.csv(final_data, file = file_path, row.names = FALSE)
+```
+
